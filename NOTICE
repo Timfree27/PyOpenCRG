@@ -1,0 +1,13 @@
+pyopencrg
+Copyright 2026 Timothé Hardy
+
+This product is an unofficial implementation of the ASAM OpenCRG file
+format. It is not affiliated with, endorsed by, or supported by ASAM e.V.
+
+Parts of this software (algorithms of the reading, writing, checking,
+modifying and evaluation functions) are derived from the ASAM OpenCRG
+MATLAB tools, distributed under the Apache License, Version 2.0.
+See https://github.com/asam-ev/OpenCRG and the NOTICE file of that project
+regarding copyright ownership.
+
+More information on ASAM OpenCRG: https://www.asam.net/standards/detail/opencrg/

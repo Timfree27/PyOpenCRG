@@ -1,0 +1,8 @@
+# text files are stored with LF line endings
+* text=auto eol=lf
+
+# never convert line endings or encodings in binary files (a KRBI/KDBI CRG file would be destroyed)
+*.crg binary
+*.stl binary
+*.png binary
+*.jpg binary

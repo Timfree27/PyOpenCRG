@@ -1,0 +1,13 @@
+# private material: personal scripts and third party sources, never published
+BIN/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+*.crg
+!tests/data/*.crg
+.ruff_cache/
