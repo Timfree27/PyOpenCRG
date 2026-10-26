@@ -19,6 +19,8 @@ import os
 
 import numpy as np
 
+from ._optional import need
+
 __all__ = ["to_obj", "to_stl", "to_csv", "to_trm", "save_heightmap", "save_normalmap",
            "save_combined_map", "to_html_map"]
 
@@ -170,13 +172,13 @@ def _image(a):
 
 def save_heightmap(road, path, cmap="Greys", absolute=False):
     """Save the elevation grid as an image (u to the right, left side of the road at the top)."""
-    import matplotlib.pyplot as plt
+    plt = need("matplotlib.pyplot", "the image export")
     plt.imsave(os.fspath(path), _image(road.surface_z() if absolute else road.z), cmap=cmap)
 
 
 def save_normalmap(road, path, cmap="Blues"):
     """Save the normal map (vertical component of the surface normal) as an image."""
-    import matplotlib.pyplot as plt
+    plt = need("matplotlib.pyplot", "the image export")
     plt.imsave(os.fspath(path), _image(road.normal_map()), cmap=cmap)
 
 
@@ -188,8 +190,8 @@ def save_combined_map(road, path, n_slices=1):
     n_slices : int
         Cut the image in this many slices along u: ``name0.png``, ``name1.png``...
     """
-    import matplotlib.pyplot as plt
-    from matplotlib import colormaps
+    plt = need("matplotlib.pyplot", "the image export")
+    colormaps = need("matplotlib", "the image export").colormaps
 
     def norm(a):
         a = a.T[::-1]

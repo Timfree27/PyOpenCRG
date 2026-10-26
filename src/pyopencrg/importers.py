@@ -18,6 +18,7 @@ import os
 
 import numpy as np
 
+from ._optional import need
 from .generate import reference_line_from_points
 from .road import CrgRoad
 
@@ -94,7 +95,8 @@ def from_point_cloud(x, y, z, u_inc=0.01, v_inc=None, reference_line=None, width
     -------
     CrgRoad
     """
-    from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+    itp = need("scipy.interpolate", "from_point_cloud()")
+    LinearNDInterpolator, NearestNDInterpolator = itp.LinearNDInterpolator, itp.NearestNDInterpolator
 
     x = np.asarray(x, dtype=np.float64).ravel()
     y = np.asarray(y, dtype=np.float64).ravel()

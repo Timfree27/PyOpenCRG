@@ -26,10 +26,20 @@ French guide: [docs/guide_fr.md](https://github.com/Timfree27/PyOpenCRG/blob/mai
 ## Installation
 
 ```bash
-pip install pyopencrg            # numpy, scipy and matplotlib are installed automatically
-pip install "pyopencrg[image]"   # adds Pillow, needed only for engrave_image()
-pip install "pyopencrg[viewer]"  # adds PyVista, for the fast interactive 3D viewer road.view3d()
+pip install "pyopencrg[all]"     # recommended: everything (scipy, matplotlib, PyVista, Pillow)
+pip install pyopencrg            # light: only numpy (read, check, evaluate, edit, write)
 ```
+
+The light installation is useful in a simulation or server environment (e.g. conda, where mixing pip
+and conda packages can conflict). The other features need an extra package; if it is missing, the
+error message gives the command to install it:
+
+| Extra | Package | Needed for |
+|---|---|---|
+| `scipy` | scipy | smoothing, filters, re-sampling of curved roads, scan repair, point cloud import |
+| `plot` | matplotlib | figures (`road.show()`, `road.plot...`) and image export |
+| `viewer` | PyVista | interactive 3D viewer `road.view3d()` |
+| `image` | Pillow | `engrave_image()` |
 
 ## In 10 lines
 
@@ -54,12 +64,35 @@ Files are **checked when they are read**: a truncated, unreadable or badly defin
 `crg.read(path, check=False)` to open a damaged file anyway (to repair it), or `check="strict"` to
 refuse files with warnings too.
 
-**Files larger than the memory**: only what you ask for is loaded.
+**Large files**: only what you ask for is loaded.
 
 ```python
-preview = crg.read("scan.crg", step=4)        # one point out of 4 in both directions (16 x less memory)
-detail = crg.read("scan.crg", u=(500, 520))   # 20 m at full resolution
+preview = crg.read("scan.crg", step=4)                  # one point out of 4 in both directions (16 x less memory)
+detail = crg.read("scan.crg", u=(500, 520))             # 20 m at full resolution
+light = crg.read("scan.crg", dtype="float32")           # half the memory for the elevation grid
+
+with crg.open("scan.crg") as f:                         # open once, like a Python file...
+    for u0 in range(0, int(f.length), 100):
+        part = f.read(u=(u0, u0 + 100))                 # ...then read parts in a few milliseconds
 ```
+
+## Tyre contact and simulation
+
+The surface normal and the slopes are exact derivatives of the interpolation (grid, slope, banking
+and curvature of the road included). For a simulation loop, an evaluator prepares everything once:
+
+```python
+nx, ny, nz = road.xy_to_normal(x, y)                     # unit normal, (0, 0, 1) on a flat road
+dz_du, dz_dv = road.uv_to_gradient(u, v)                 # slopes along and across the road
+
+ev = road.evaluator()                                    # prepared once
+for step in range(n_steps):
+    z, nx, ny, nz = ev.xy_to_z(x, y, with_normal=True)   # height and normal of 640 contact points: ~0.25 ms
+```
+
+The evaluator remembers the last position of each point and starts the next search from there.
+Give `u_hint` (one value, e.g. the u of the wheel) to `road.xy_to_uv()` / `road.xy_to_z()` when the
+road passes several times close to the same place.
 
 ## Gallery
 
@@ -96,9 +129,11 @@ z_absolute = road.z  +  road.zr (reference line elevation)  +  road.banking * v
 
 | Task | Code |
 |---|---|
-| Read / write | `crg.read(path)`, `road.save(path, fmt="KRBI")`, `crg.convert(a, b, "LDFI")` |
+| Read / write | `crg.read(path)`, `crg.open(path)`, `road.save(path, fmt="KRBI")`, `crg.convert(a, b, "LDFI")` |
 | Information | `print(road)`, `road.check()`, `road.stats()` |
 | Elevation, position | `uv_to_z`, `uv_to_xy`, `xy_to_uv`, `xy_to_z`, `u_to_phi`, `u_to_curvature` |
+| Normal, slopes | `uv_to_normal`, `xy_to_normal`, `uv_to_gradient`, `xy_to_z(..., with_normal=True)` |
+| Fast repeated calls | `ev = road.evaluator()`, then `ev.xy_to_z(...)`, `ev.uv_to_z(...)`... |
 | Profiles | `road.long_section(v=0.9)`, `road.cross_section(u=50)` |
 | Cut, join, flip | `crop(u=..., v=...)`, `trim(1, 1)`, `crg.concatenate([r1, r2])`, `flip()` |
 | Re-sample | `resample(u_inc=0.05, v_inc=0.05)` |
@@ -152,7 +187,7 @@ pytest
 If you use pyopencrg in a report, a publication or another software, please cite it
 (see [CITATION.cff](https://github.com/Timfree27/PyOpenCRG/blob/main/CITATION.cff)):
 
-> Hardy, T. *PyOpenCRG: OpenCRG road surface files in pure Python*, version 0.1.0, 2026.
+> Hardy, T. *PyOpenCRG: OpenCRG road surface files in pure Python*, version 0.2.0, 2026.
 
 ## License
 

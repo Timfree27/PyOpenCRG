@@ -10,11 +10,16 @@ pistes scannées) sans forcément bien connaître Python. Chaque exemple peut ê
 Dans un terminal (invite de commandes Windows, Anaconda Prompt, terminal Linux...) :
 
 ```bash
-pip install pyopencrg
+pip install "pyopencrg[all]"
 ```
 
-numpy, scipy et matplotlib s'installent automatiquement. Pour graver un logo sur une piste
-(`engrave_image`), ajoutez Pillow : `pip install "pyopencrg[image]"`.
+C'est l'installation conseillée : elle installe tout (numpy, scipy, matplotlib, PyVista, Pillow).
+
+Il existe aussi une installation légère, `pip install pyopencrg`, avec numpy seul. Elle suffit
+pour lire, contrôler, évaluer, modifier et écrire des pistes, par exemple dans un environnement de
+simulation. Les autres fonctions (figures, lissages, réparation de scans, vue 3D...) demandent
+alors un paquet supplémentaire : le message d'erreur indique la commande à lancer, par exemple
+`pip install "pyopencrg[plot]"` pour les figures.
 
 Vérification :
 
@@ -83,7 +88,23 @@ besoin, le reste reste sur le disque.
 apercu = crg.read("scan.crg", step=4)          # 1 point sur 4 dans chaque direction : 16 fois moins de mémoire
 detail = crg.read("scan.crg", u=(500, 520))    # 20 m en pleine résolution
 mix = crg.read("scan.crg", u=(0, 300), step=(2, 1))   # 1 section sur 2, toutes les sections longitudinales
+leger = crg.read("scan.crg", dtype="float32")         # grille en simple précision : 2 fois moins de mémoire
 ```
+
+Pour lire plusieurs morceaux d'un même fichier, on peut aussi l'**ouvrir une fois**, comme un
+fichier Python : l'en-tête et la ligne de référence sont lus une seule fois, puis chaque morceau
+se lit en quelques millisecondes.
+
+```python
+with crg.open("scan.crg") as f:
+    print(f.u_start, f.u_end, f.length)         # informations, sans lire la grille
+    for u0 in range(0, int(f.length), 100):
+        morceau = f.read(u=(u0, u0 + 100))       # 100 m à la fois, avec les u de la piste entière
+```
+
+Les fichiers texte (LRFI, LDFI) ne se lisent pas par morceaux : `open()` charge leur grille en
+mémoire. Pour un très gros fichier texte, convertissez-le une fois en binaire avec
+`crg.convert("scan.crg", "scan_bin.crg")`.
 
 En ligne de commande : `pyopencrg show scan.crg --step 4`, `pyopencrg view scan.crg --u 500 520`.
 
@@ -124,6 +145,31 @@ v, z = piste.cross_section(u=50.0)
 ```
 
 Toutes ces fonctions acceptent un nombre ou un tableau numpy (des millions de points d'un coup).
+
+**Normale et pentes de la surface** (utiles pour le contact pneu-sol : la normale donne la
+direction de l'effort normal) :
+
+```python
+nx, ny, nz = piste.xy_to_normal(x, y)                  # vecteur unitaire, (0, 0, 1) sur un sol plat
+dz_du, dz_dv = piste.uv_to_gradient(120.0, 0.9)        # pente en long et en travers (m/m)
+z, nx, ny, nz = piste.xy_to_z(x, y, with_normal=True)  # hauteur et normale en un seul appel
+```
+
+Elles tiennent compte de la grille, de la pente, du dévers et de la courbure de la route.
+
+**Dans une boucle de simulation**, un évaluateur prépare tout une seule fois et rend chaque appel
+plus rapide :
+
+```python
+ev = piste.evaluator()
+for pas in range(nb_pas):
+    x, y = points_de_contact(pas)                       # votre simulation
+    z, nx, ny, nz = ev.xy_to_z(x, y, with_normal=True)  # environ 0,25 ms pour 640 points
+```
+
+L'évaluateur se souvient de la dernière position de chaque point et repart de là. Si la piste
+repasse plusieurs fois au même endroit (croisement, pont), donnez le u approximatif de la roue :
+`piste.xy_to_z(x, y, u_hint=u_roue)`. Une seule valeur suffit pour tous les points.
 
 ## 5. Modifier une piste
 

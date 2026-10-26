@@ -6,7 +6,6 @@ from pyopencrg import wgs84
 from pyopencrg.mapping import Ellipsoid, Projection, tm_forward, tm_inverse
 from pyopencrg.smoothing import fir_smooth, smoothing_spline
 
-
 # --- geodesy -------------------------------------------------------------
 
 def test_vincenty_reference():

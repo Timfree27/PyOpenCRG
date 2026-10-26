@@ -42,6 +42,12 @@ from .keywords import DEFAULT_MODIFIERS, OPTION_DEFAULTS
 __all__ = ["CrgRoad", "read"]
 
 
+def _as_grid(z):
+    """Elevation grid as float64, or float32 if it is already float32 (to save memory)."""
+    z = np.asarray(z)
+    return z if z.dtype in (np.float32, np.float64) else z.astype(np.float64)
+
+
 def _as_out(arr, shape):
     """Return a float for scalar inputs, else an array of the broadcast shape."""
     if shape == ():
@@ -211,7 +217,7 @@ class CrgRoad:
     @classmethod
     def _from_state(cls, z, v, u_start, u_inc, x, y, zr, banking, template=None):
         obj = cls.__new__(cls)
-        obj._init_state(np.asarray(z, dtype=np.float64), v, float(u_start), float(u_inc), x, y, zr, banking)
+        obj._init_state(_as_grid(z), v, float(u_start), float(u_inc), x, y, zr, banking)
         if template is not None:
             obj._copy_meta(template)
         return obj
@@ -257,9 +263,9 @@ class CrgRoad:
     # ------------------------------------------------------------------
 
     @classmethod
-    def read(cls, path, apply_mods: bool = False, check=True, u=None, step=1) -> CrgRoad:
+    def read(cls, path, apply_mods: bool = False, check=True, u=None, step=1, dtype="float64") -> CrgRoad:
         """Read an OpenCRG file. Same as :func:`pyopencrg.read`."""
-        return read(path, apply_mods=apply_mods, check=check, u=u, step=step)
+        return read(path, apply_mods=apply_mods, check=check, u=u, step=step, dtype=dtype)
 
     def save(self, path, fmt: str = "KRBI") -> None:
         """Write the road to an OpenCRG file.
@@ -299,7 +305,7 @@ class CrgRoad:
 
     @z.setter
     def z(self, value):
-        value = np.asarray(value, dtype=np.float64)
+        value = _as_grid(value)
         if value.shape != self._z.shape:
             raise ValueError(f"new z must have the shape {self._z.shape}, got {value.shape}")
         self._z = value.copy()
@@ -538,7 +544,7 @@ class CrgRoad:
     # evaluation
     # ------------------------------------------------------------------
 
-    def uv_to_z(self, u, v, grid_only: bool = False):
+    def uv_to_z(self, u, v, grid_only: bool = False, with_normal: bool = False):
         """Elevation of the road at road coordinates (u, v).
 
         Parameters
@@ -549,19 +555,61 @@ class CrgRoad:
         grid_only : bool, optional
             If True, return only the elevation grid value (without reference
             line elevation and banking).
+        with_normal : bool, optional
+            If True, also return the unit normal vector of the surface (see
+            :meth:`uv_to_normal`), computed in the same pass.
 
         Returns
         -------
-        float or numpy.ndarray
+        z : float or numpy.ndarray
             Elevation (m). NaN where the road has no data.
+        nx, ny, nz : float or numpy.ndarray
+            Only with ``with_normal=True``.
 
         Examples
         --------
         >>> road.uv_to_z(12.5, 0.0)                           # doctest: +SKIP
         >>> road.uv_to_z(np.linspace(0, 100, 1001), 0.9)      # long profile at v = 0.9 m  # doctest: +SKIP
+        >>> z, nx, ny, nz = road.uv_to_z(12.5, 0.0, with_normal=True)   # doctest: +SKIP
         """
         shape, (pu, pv) = _broadcast(u, v)
+        if with_normal:
+            if grid_only:
+                raise ValueError("with_normal=True is not available with grid_only=True")
+            return tuple(_as_out(a, shape) for a in _ev.uv_to_normal(self, pu, pv))
         return _as_out(_ev.uv_to_z(self, pu, pv, grid_only), shape)
+
+    def uv_to_gradient(self, u, v, grid_only: bool = False):
+        """Slope of the surface along u and along v at road coordinates (u, v).
+
+        The derivatives include the reference line elevation and the
+        banking (unless ``grid_only=True``). They are exact for the bilinear
+        interpolation used by :meth:`uv_to_z`.
+
+        Returns
+        -------
+        dz_du, dz_dv : float or numpy.ndarray
+            Slopes in m/m (0.05 = 5 %).
+        """
+        shape, (pu, pv) = _broadcast(u, v)
+        _, gu, gv = _ev.uv_to_z_gradient(self, pu, pv, grid_only)
+        return _as_out(gu, shape), _as_out(gv, shape)
+
+    def uv_to_normal(self, u, v):
+        """Unit normal vector of the road surface at road coordinates (u, v).
+
+        The normal points upwards and is given in the inertial x/y/z frame:
+        ``(0, 0, 1)`` on a flat horizontal road. It takes into account the
+        elevation grid, the slope, the banking and the curvature of the
+        road. This is the direction of the normal contact force of a tyre.
+
+        Returns
+        -------
+        nx, ny, nz : float or numpy.ndarray
+        """
+        shape, (pu, pv) = _broadcast(u, v)
+        _, nx, ny, nz = _ev.uv_to_normal(self, pu, pv)
+        return _as_out(nx, shape), _as_out(ny, shape), _as_out(nz, shape)
 
     def uv_to_xy(self, u, v):
         """Inertial position (x, y) of road coordinates (u, v).
@@ -582,8 +630,10 @@ class CrgRoad:
         x, y : float or array_like
             Positions in the inertial system.
         u_hint : float or array_like, optional
-            Approximate u of the points. Only useful for roads that pass
-            several times near the same place (crossings, overpasses).
+            Approximate u of the points: one value for all of them (e.g. the
+            u of the vehicle) or one value per point. The search is faster,
+            and it is needed for roads that pass several times near the same
+            place (crossings, overpasses).
 
         Returns
         -------
@@ -594,17 +644,64 @@ class CrgRoad:
         u, v = _ev.xy_to_uv(self, px, py, hint)
         return _as_out(u, shape), _as_out(v, shape)
 
-    def xy_to_z(self, x, y, u_hint=None):
-        """Elevation of the road at inertial positions (x, y)."""
+    def xy_to_z(self, x, y, u_hint=None, with_normal: bool = False):
+        """Elevation of the road at inertial positions (x, y).
+
+        Parameters
+        ----------
+        u_hint : float or array_like, optional
+            Approximate u of the points, see :meth:`xy_to_uv`.
+        with_normal : bool, optional
+            If True, also return the unit normal vector (see :meth:`uv_to_normal`).
+
+        Returns
+        -------
+        z : float or numpy.ndarray
+        nx, ny, nz : float or numpy.ndarray
+            Only with ``with_normal=True``.
+        """
         shape, (px, py) = _broadcast(x, y)
         hint = None if u_hint is None else np.broadcast_to(np.asarray(u_hint, float), shape).ravel()
         u, v = _ev.xy_to_uv(self, px, py, hint)
+        if with_normal:
+            return tuple(_as_out(a, shape) for a in _ev.uv_to_normal(self, u, v))
         return _as_out(_ev.uv_to_z(self, u, v), shape)
+
+    def xy_to_normal(self, x, y, u_hint=None):
+        """Unit normal vector (nx, ny, nz) of the road surface at inertial positions (x, y).
+
+        See :meth:`uv_to_normal` and, for ``u_hint``, :meth:`xy_to_uv`.
+        """
+        _, nx, ny, nz = self.xy_to_z(x, y, u_hint, with_normal=True)
+        return nx, ny, nz
 
     def uv_to_xyz(self, u, v):
         """Inertial position (x, y, z) of road coordinates (u, v)."""
         x, y = self.uv_to_xy(u, v)
         return x, y, self.uv_to_z(u, v)
+
+    def evaluator(self):
+        """Fast evaluator for repeated calls with few points (e.g. a simulation loop).
+
+        The evaluator prepares everything once and has the same evaluation
+        methods as the road (``uv_to_z``, ``xy_to_z``, ``xy_to_uv``,
+        ``uv_to_normal``...), with a lower cost per call. It also remembers
+        the last u found for each point and uses it as the starting point of
+        the next search: points that move continuously (tyre contact
+        points) are found almost immediately.
+
+        Create it again if you replace an array of the road (``road.z = ...``)
+        or change an option. Changing the values of ``road.z`` in place is
+        seen by the evaluator.
+
+        Examples
+        --------
+        >>> ev = road.evaluator()                                   # doctest: +SKIP
+        >>> for step in range(n_steps):                             # doctest: +SKIP
+        ...     z, nx, ny, nz = ev.xy_to_z(x, y, with_normal=True)
+        """
+        from .evaluator import RoadEvaluator
+        return RoadEvaluator(self)
 
     def u_to_phi(self, u):
         """Heading angle (rad) of the reference line at u."""
@@ -1145,11 +1242,10 @@ class CrgRoad:
 # reading
 # ---------------------------------------------------------------------------
 
-def _road_from_content(c) -> CrgRoad:
+def _reference_line(c, nu):
+    """Reference line of all the ``nu`` records of a file: (x, y, zr, banking, warnings)."""
     head = c.head
     warns = list(c.warnings)
-    z = c.z
-    nu = c.n_records or z.shape[0]  # the reference line is built on all records of the file
     uinc = c.u_inc
     opts = dict(c.opts)
     ceps = opts.get("check_eps", OPTION_DEFAULTS["check_eps"])
@@ -1219,20 +1315,26 @@ def _road_from_content(c) -> CrgRoad:
         if abs(head.get("reference_line_end_b", bbeg) - bbeg) > ceps:
             warns.append("no banking channel but start and end banking differ: start banking used")
         b = np.full(nu, bbeg)
+    return x, y, zr, b, warns
 
-    rows = np.arange(nu) if c.rows is None else c.rows
-    if rows.size != nu:  # partial or decimated reading: keep the selected cross sections
+
+def _assemble(c, z, v, rows, x, y, zr, b, warns):
+    """Road made of the grid ``z`` (records ``rows`` of the file) and the reference line of the file."""
+    nu = x.size
+    head = c.head
+    uinc = c.u_inc
+    if rows is not None and rows.size != nu:  # partial or decimated reading: keep the selected cross sections
         step = int(rows[1] - rows[0])
         x, y, zr, b = x[rows], y[rows], zr[rows], b[rows]
-        road = CrgRoad._from_state(z, c.v, c.u_start + rows[0] * uinc, uinc * step, x, y, zr, b)
+        road = CrgRoad._from_state(z, v, c.u_start + rows[0] * uinc, uinc * step, x, y, zr, b)
     else:
-        road = CrgRoad._from_state(z, c.v, c.u_start, uinc, x, y, zr, b)
-    road.comments = c.comments
-    road.opts = opts
+        road = CrgRoad._from_state(z, v, c.u_start, uinc, x.copy(), y.copy(), zr.copy(), b.copy())
+    road.comments = list(c.comments)
+    road.opts = dict(c.opts)
     road._other_tool_opts = dict(c.other_tool_opts)
-    road.mods = c.mods
-    road.mpro = c.mpro
-    road.extra_header = c.extra
+    road.mods = None if c.mods is None else dict(c.mods)
+    road.mpro = None if c.mpro is None else dict(c.mpro)
+    road.extra_header = list(c.extra)
     road.filename = c.filename
     road.x_offset = head.get("reference_line_offset_x", 0.0)
     road.y_offset = head.get("reference_line_offset_y", 0.0)
@@ -1246,9 +1348,22 @@ def _road_from_content(c) -> CrgRoad:
     road.alt_end = head.get("reference_line_end_alt")
     if road.alt_start is not None and road.alt_end is None:
         road.alt_end = road.alt_start + (zr[-1] - zr[0])
-    road.read_warnings = warns
+    road.read_warnings = list(warns)
     road.read_errors = list(c.errors)
     return road
+
+
+def _road_from_content(c) -> CrgRoad:
+    nu = c.n_records or c.z.shape[0]  # the reference line is built on all records of the file
+    x, y, zr, b, warns = _reference_line(c, nu)
+    return _assemble(c, c.z, c.v, c.rows, x, y, zr, b, warns)
+
+
+def _grid_dtype(dtype):
+    dt = np.dtype(dtype)
+    if dt not in (np.float32, np.float64):
+        raise ValueError("dtype must be 'float64' or 'float32'")
+    return dt
 
 
 def _ffill(a):
@@ -1264,7 +1379,7 @@ def _ffill(a):
     return a
 
 
-def read(path, apply_mods: bool = False, check=True, u=None, step=1) -> CrgRoad:
+def read(path, apply_mods: bool = False, check=True, u=None, step=1, dtype="float64") -> CrgRoad:
     """Read an OpenCRG file.
 
     The file is checked when it is read (see :meth:`CrgRoad.check`): a file
@@ -1290,6 +1405,11 @@ def read(path, apply_mods: bool = False, check=True, u=None, step=1) -> CrgRoad:
         Keep one cross section out of ``step`` (and one long section out of
         ``step``; give two values to choose them separately). A quick, light
         preview of a very large file, e.g. ``step=4`` uses 16 times less memory.
+    dtype : str, optional
+        Type of the elevation grid in memory: ``"float64"`` (default) or
+        ``"float32"``, which uses half the memory and keeps a resolution
+        far below a micrometre on road heights. The reference line is
+        always kept in float64.
 
     Returns
     -------
@@ -1311,10 +1431,9 @@ def read(path, apply_mods: bool = False, check=True, u=None, step=1) -> CrgRoad:
     >>> overview = crg.read("scan.crg", step=4)       # doctest: +SKIP
     >>> detail = crg.read("scan.crg", u=(500, 520))   # doctest: +SKIP
     """
-    from .io import read_crg_file
-    from .io import CrgCorruptedError
+    from .io import CrgCorruptedError, read_crg_file
     try:
-        content = read_crg_file(path, u=u, step=step, stop_on_error=bool(check))
+        content = read_crg_file(path, u=u, step=step, stop_on_error=bool(check), dtype=_grid_dtype(dtype))
     except CrgCorruptedError as exc:  # refused before the data is loaded in memory
         from .checks import CheckReport, CrgCheckError
         raise CrgCheckError(CheckReport(errors=[f"(reading) {e}" for e in exc.errors]), os.fspath(path)) from None

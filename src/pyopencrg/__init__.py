@@ -8,6 +8,7 @@ Quick start::
     import pyopencrg as crg
 
     road = crg.read("road.crg")          # read a file (KRBI, KDBI, LRFI or LDFI)
+                                          # or crg.open("road.crg") to read it by parts
     print(road)                           # summary
     print(road.check())                   # consistency checks
     z = road.uv_to_z(10.0, 0.5)           # elevation 10 m along the road, 0.5 m to the left
@@ -29,18 +30,23 @@ Main entry points:
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import importlib
 
 from . import analysis, checks, edit, evaluate, generate, io, keywords, mods, smoothing
 from .checks import CheckReport, CrgCheckError, CrgCheckWarning
+from .crgfile import CrgFile, open
 from .edit import ComparisonResult, compare, concatenate
+from .evaluator import RoadEvaluator
 from .road import CrgRoad, read
 
-__all__ = ["__version__", "read", "CrgRoad", "convert", "compare", "concatenate", "CheckReport",
-           "CrgCheckError", "CrgCheckWarning", "ComparisonResult", "analysis", "checks", "edit", "evaluate",
-           "generate", "io", "keywords", "mods", "smoothing", "plot", "export", "importers", "wgs84", "mapping", "cleaner", "viewer"]
+__all__ = [
+    "__version__", "read", "open", "convert", "compare", "concatenate",
+    "CrgRoad", "CrgFile", "RoadEvaluator", "CheckReport", "CrgCheckError", "CrgCheckWarning", "ComparisonResult",
+    "analysis", "checks", "edit", "evaluate", "generate", "io", "keywords", "mods", "smoothing",
+    "plot", "export", "importers", "wgs84", "mapping", "cleaner", "viewer",
+]
 
 _LAZY = ("plot", "export", "importers", "wgs84", "mapping", "cleaner", "viewer", "cli")
 

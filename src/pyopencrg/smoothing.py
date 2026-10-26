@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._optional import need
+
 __all__ = ["SmoothingSpline", "smoothing_spline", "fir_smooth"]
 
 
@@ -69,8 +71,8 @@ def smoothing_spline(x, y, p: float, weights=None) -> SmoothingSpline:
     >>> abs(f(5.0) - np.sin(5.0)) < 0.05
     True
     """
-    from scipy.sparse import diags
-    from scipy.sparse.linalg import spsolve
+    diags = need("scipy.sparse", "smoothing_spline() (used by extract_slope, extract_banking...)").diags
+    spsolve = need("scipy.sparse.linalg", "smoothing_spline()").spsolve
 
     x = np.asarray(x, dtype=np.float64).ravel()
     y = np.asarray(y, dtype=np.float64).ravel()

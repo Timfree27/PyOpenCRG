@@ -23,7 +23,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .keywords import MODIFIER_KEYWORDS, MODS_BY_OFFSET, MODS_BY_REFPOINT, OPTION_DEFAULTS
+from .keywords import (
+    MODIFIER_KEYWORDS,
+    MODS_BY_OFFSET,
+    MODS_BY_REFPOINT,
+    OPTION_DEFAULTS,
+)
 
 __all__ = ["CheckReport", "CrgCheckError", "CrgCheckWarning", "check", "validate", "info_text"]
 

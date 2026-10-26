@@ -24,6 +24,8 @@ from datetime import datetime
 
 import numpy as np
 
+from ._optional import need
+
 __all__ = [
     "show", "show_refline_map", "show_refline_elevation", "show_cuts_and_limits", "show_elgrid_surface",
     "show_road_surface", "show_road_uv_surface", "show_info", "show_refpoints",
@@ -43,7 +45,7 @@ MAX_SURF = (250, 120)
 
 
 def _plt():
-    import matplotlib.pyplot as plt
+    plt = need("matplotlib.pyplot", "the plots")
     return plt
 
 
@@ -208,7 +210,7 @@ def grid_limits(road, iu=None, iv=None, ax=None):
 
 
 def _seq_colors(n):
-    from matplotlib import colormaps
+    colormaps = need("matplotlib", "the plots").colormaps
     return colormaps["Blues"](np.linspace(0.35, 0.95, n))
 
 

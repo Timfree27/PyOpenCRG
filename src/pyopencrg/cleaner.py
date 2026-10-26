@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._optional import need
 from .analysis import _fill_patch, artifact_mask, nan_regions, normal_map
 
 __all__ = ["clean_interactive"]
@@ -29,8 +30,8 @@ __all__ = ["clean_interactive"]
 
 def _ask(fig, labels):
     """Add two buttons to a figure and wait for a click. Returns the clicked label."""
-    import matplotlib.pyplot as plt
-    from matplotlib.widgets import Button
+    plt = need("matplotlib.pyplot", "clean_interactive()")
+    Button = need("matplotlib.widgets", "clean_interactive()").Button
 
     choice = {"value": labels[1]}
     buttons = []
@@ -66,7 +67,7 @@ def clean_interactive(road, normal_tol=0.3, radius=15, margin=50, method="rbf"):
     CrgRoad
         The cleaned road (the input road is not modified).
     """
-    import matplotlib.pyplot as plt
+    plt = need("matplotlib.pyplot", "clean_interactive()")
 
     mask = artifact_mask(road, normal_tol, radius)
     holes = road.z.copy()

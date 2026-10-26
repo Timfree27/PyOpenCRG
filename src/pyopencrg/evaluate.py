@@ -1,5 +1,5 @@
 """
-Evaluation of a road: elevation, position, heading and curvature.
+Evaluation of a road: elevation, gradient, normal, position, heading and curvature.
 
 OpenCRG uses two coordinate systems:
 
@@ -10,7 +10,8 @@ OpenCRG uses two coordinate systems:
 All functions of this module are vectorised: they take numpy arrays of any
 size and process them at once (in chunks, to keep the memory low). They are
 used by the methods of :class:`pyopencrg.CrgRoad` (``road.uv_to_z(...)``,
-``road.xy_to_uv(...)``...), which are the recommended way to call them.
+``road.xy_to_uv(...)``...) and by :class:`pyopencrg.RoadEvaluator`, which are
+the recommended way to call them.
 
 The algorithms follow the ones of the OpenCRG reference implementation:
 
@@ -21,7 +22,12 @@ The algorithms follow the ones of the OpenCRG reference implementation:
 * x/y positions along the curved reference line obtained by interpolating
   between "corner normals", which gives a continuous mapping;
 * inverse mapping x/y -> u/v by searching the right interval of the
-  reference line (a KD-tree gives the starting point).
+  reference line, starting from the closest reference line point or from a
+  hint given by the user.
+
+The gradient and the normal are the exact derivatives of this interpolation
+(including the reference line elevation, the banking and the curvature of
+the u/v -> x/y mapping).
 """
 
 from __future__ import annotations
@@ -29,6 +35,11 @@ from __future__ import annotations
 import numpy as np
 
 _CHUNK = 1 << 20
+
+
+def _clip(a, lo, hi):
+    """Faster than np.clip for small arrays."""
+    return np.minimum(np.maximum(a, lo), hi)
 
 
 def _chunked(func, n, *arrays):
@@ -87,144 +98,238 @@ def closure(road):
     return res
 
 
-def _map_closed(road, pu):
-    if int(road.get_option("refline_continuation")) == 1:
-        ubex, _, ulex = closure(road)
-        if ulex != 0:
-            return np.mod(pu - ubex, ulex) + ubex
-    return pu
+# ---------------------------------------------------------------------------
+# Evaluation parameters, prepared once per road
+# ---------------------------------------------------------------------------
+
+class Params:
+    """Everything the evaluation needs, read once from a road.
+
+    Building it reads the options and the arrays of the road; evaluating
+    many small sets of points then costs almost nothing more than the
+    computation itself.
+    """
+
+    def __init__(self, road):
+        opt = road.get_option
+        self.cache = road._cache  # geometric caches (corner normals, search tree)
+        self.ubeg, self.uinc, self.nu = road.u_start, road.u_inc, road.nu
+        self.uend = road.u_end
+        self.z = road.z
+        self.v = road.v
+        self.nv = self.v.size
+        self.vmin, self.vmax = float(self.v[0]), float(self.v[-1])
+        self.vinc = road.v_inc
+        self.x, self.y, self.zr, self.b = road.x, road.y, road.zr, road.banking
+        self.straight = road.is_straight
+        self.phi_start, self.phi_end = road.phi_start, road.phi_end
+        self.pbc, self.pbs = np.cos(self.phi_start), np.sin(self.phi_start)
+        self.pec, self.pes = np.cos(self.phi_end), np.sin(self.phi_end)
+        self.bdmu, self.bdmv = int(opt("border_mode_u")), int(opt("border_mode_v"))
+        self.bdou, self.bdov = float(opt("border_offset_u")), float(opt("border_offset_v"))
+        self.bdss, self.bdse = float(opt("border_smooth_ubeg")), float(opt("border_smooth_uend"))
+        self.ceps = float(opt("check_eps"))
+        self.closed = False
+        self.ubex = self.uenx = self.ulex = 0.0
+        if int(opt("refline_continuation")) == 1:
+            self.ubex, self.uenx, self.ulex = closure(road)
+            self.closed = self.ulex != 0
+        self._road = road
+
+    def map_closed(self, pu):
+        if self.closed:
+            return np.mod(pu - self.ubex, self.ulex) + self.ubex
+        return pu
+
+
+def params(road) -> Params:
+    """Evaluation parameters of a road (cached, rebuilt when the road changes)."""
+    key = (id(road._z), id(road._v), id(road._zr), id(road._banking), tuple(sorted(road.opts.items())))
+    cached = road._cache.get("params")
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    p = Params(road)
+    road._cache["params"] = (key, p)
+    return p
 
 
 # ---------------------------------------------------------------------------
-# u, v -> z
+# u, v -> z (and its gradient)
 # ---------------------------------------------------------------------------
 
 def uv_to_z(road, pu, pv, grid_only: bool = False):
-    """Elevation z at road coordinates (u, v).
+    """Elevation z at road coordinates (u, v) (1D arrays of the same size).
 
-    Parameters
-    ----------
-    road : CrgRoad
-    pu, pv : 1D numpy arrays of the same size
-    grid_only : bool
-        If True, only the elevation grid is interpolated (without the
-        reference line elevation, slope, banking, border offsets and
-        smoothing zones).
+    With ``grid_only=True`` only the elevation grid is interpolated (without
+    the reference line elevation, slope, banking, border offsets and
+    smoothing zones).
     """
+    p = params(road)
     pu = np.asarray(pu, dtype=np.float64).ravel()
     pv = np.asarray(pv, dtype=np.float64).ravel()
-    return _chunked(lambda a, b: _uv_to_z(road, a, b, grid_only), pu.size, pu, pv)
+    return _chunked(lambda a, b: _uv_to_z(p, a, b, grid_only, False), pu.size, pu, pv)
 
 
-def _uv_to_z(road, pu, pv, grid_only):
-    opt = road.get_option
-    bdmu, bdmv = int(opt("border_mode_u")), int(opt("border_mode_v"))
-    ceps = opt("check_eps")
-    z = road.z
-    nu, nv = z.shape
-    ubeg, uinc = road.u_start, road.u_inc
-    uend = road.u_end
-    v = road.v
-    vmin, vmax = v[0], v[-1]
+def uv_to_z_gradient(road, pu, pv, grid_only: bool = False):
+    """Elevation z and its derivatives (dz/du, dz/dv) at road coordinates (u, v)."""
+    p = params(road)
+    pu = np.asarray(pu, dtype=np.float64).ravel()
+    pv = np.asarray(pv, dtype=np.float64).ravel()
+    return _chunked(lambda a, b: _uv_to_z(p, a, b, grid_only, True), pu.size, pu, pv)
 
-    pu = _map_closed(road, pu)
-    if bdmu == 3:
-        pu = np.mod(pu - ubeg, uend - ubeg) + ubeg
-    elif bdmu == 4:
-        w = np.mod(pu - ubeg, 2 * (uend - ubeg))
-        pu = np.where(w > uend - ubeg, 2 * (uend - ubeg) - w, w) + ubeg
-    if bdmv == 3:
-        pv = np.mod(pv - vmin, vmax - vmin) + vmin
-    elif bdmv == 4:
-        w = np.mod(pv - vmin, 2 * (vmax - vmin))
-        pv = np.where(w > vmax - vmin, 2 * (vmax - vmin) - w, w) + vmin
+
+def _wrap(t, length, reflect):
+    """Repeat or reflect mapping of t (>= 0 after shift) into [0, length]; returns (t, sign of dt)."""
+    if reflect:
+        w = np.mod(t, 2 * length)
+        back = w > length
+        return np.where(back, 2 * length - w, w), np.where(back, -1.0, 1.0)
+    return np.mod(t, length), None
+
+
+def _uv_to_z(p, pu, pv, grid_only, grad):
+    z = p.z
+    nu, nv = p.nu, p.nv
+    ubeg, uinc, uend = p.ubeg, p.uinc, p.uend
+    vmin, vmax = p.vmin, p.vmax
+    su = sv = None  # sign of the derivative after a reflection
+
+    pu = p.map_closed(pu)
+    if p.bdmu in (3, 4):
+        t, su = _wrap(pu - ubeg, uend - ubeg, p.bdmu == 4)
+        pu = t + ubeg
+    if p.bdmv in (3, 4):
+        t, sv = _wrap(pv - vmin, vmax - vmin, p.bdmv == 4)
+        pv = t + vmin
 
     ui = (pu - ubeg) / uinc
-    iu = np.clip(np.floor(ui), 0, nu - 2).astype(np.int64)
+    iu = _clip(np.floor(ui), 0, nu - 2).astype(np.int64)
     du = ui - iu
-    tu = np.clip(du, 0.0, 1.0)
-    vinc = road.v_inc
-    if vinc is not None:
-        vi = (pv - vmin) / vinc
-        iv = np.clip(np.floor(vi), 0, nv - 2).astype(np.int64)
+    tu = _clip(du, 0.0, 1.0)
+    if p.vinc is not None:
+        vi = (pv - vmin) / p.vinc
+        iv = _clip(np.floor(vi), 0, nv - 2).astype(np.int64)
         dv = vi - iv
+        vstep = p.vinc
     else:
+        v = p.v
         iv = np.clip(np.searchsorted(v, pv, side="right") - 1, 0, nv - 2)
-        dv = (pv - v[iv]) / (v[iv + 1] - v[iv])
-    tv = np.clip(dv, 0.0, 1.0)
+        vstep = v[iv + 1] - v[iv]
+        dv = (pv - v[iv]) / vstep
+    tv = _clip(dv, 0.0, 1.0)
 
     z00 = z[iu, iv]
     z10 = z[iu + 1, iv]
     z01 = z[iu, iv + 1]
     z11 = z[iu + 1, iv + 1]
+    a10 = z10 - z00
+    a01 = z01 - z00
     d11 = z11 - z10 - z01 + z00
-    res = (d11 * tv + (z10 - z00)) * tu + (z01 - z00) * tv + z00
+    res = (d11 * tv + a10) * tu + a01 * tv + z00
+    if grad:
+        gu = (d11 * tv + a10) / uinc
+        gv = (d11 * tu + a01) / vstep
     nanc = np.isnan(d11)
     if nanc.any():
         # a NaN corner is only relevant if the point is not on the opposite edge
+        ceps = p.ceps
         uw = tu[nanc].copy()
         vw = tv[nanc].copy()
         uw[uw < ceps] = 0.0
         uw[uw > 1 - ceps] = 1.0
         vw[vw < ceps] = 0.0
         vw[vw > 1 - ceps] = 1.0
-        a00, a10, a01, a11 = z00[nanc], z10[nanc], z01[nanc], z11[nanc]
-        n00, n10, n01, n11 = np.isnan(a00), np.isnan(a10), np.isnan(a01), np.isnan(a11)
+        b00, b10, b01, b11 = z00[nanc], z10[nanc], z01[nanc], z11[nanc]
+        n00, n10, n01, n11 = np.isnan(b00), np.isnan(b10), np.isnan(b01), np.isnan(b11)
         relevant = ((n00 & (uw < 1) & (vw < 1)) | (n10 & (uw > 0) & (vw < 1))
                     | (n01 & (uw < 1) & (vw > 0)) | (n11 & (uw > 0) & (vw > 0)))
-        a00, a10, a01, a11 = (np.where(n, 0.0, a) for n, a in ((n00, a00), (n10, a10), (n01, a01), (n11, a11)))
-        val = ((a11 - a10 - a01 + a00) * vw + (a10 - a00)) * uw + (a01 - a00) * vw + a00
+        b00, b10, b01, b11 = (np.where(n, 0.0, a) for n, a in ((n00, b00), (n10, b10), (n01, b01), (n11, b11)))
+        e11 = b11 - b10 - b01 + b00
+        val = (e11 * vw + (b10 - b00)) * uw + (b01 - b00) * vw + b00
         val[relevant] = np.nan
         res[nanc] = val
+        if grad:
+            g1 = (e11 * vw + (b10 - b00)) / uinc
+            g2 = (e11 * uw + (b01 - b00)) / (vstep if np.isscalar(vstep) else vstep[nanc])
+            g1[relevant] = np.nan
+            g2[relevant] = np.nan
+            gu[nanc] = g1
+            gv[nanc] = g2
 
     out_u = tu != du
     out_v = tv != dv
-    if grid_only:
-        if bdmu == 0:
-            res[out_u] = np.nan
-        if bdmv == 0:
-            res[out_v] = np.nan
-        return res
+    if grad:  # beyond the grid the value is kept constant
+        gu[out_u] = 0.0
+        gv[out_v] = 0.0
 
-    zr = road.zr
-    b = road.banking
-    res += zr[iu] + tu * (zr[iu + 1] - zr[iu])
-    res += np.clip(pv, vmin, vmax) * (b[iu] + tu * (b[iu + 1] - b[iu]))
-    bdou, bdov = opt("border_offset_u"), opt("border_offset_v")
-    if bdmu == 1:
-        res[out_u] = bdou
-    elif bdmu == 2 and bdou != 0:
-        res[out_u] += bdou
-    if bdmv == 1:
-        res[out_v] = bdov
-    elif bdmv == 2 and bdov != 0:
-        res[out_v] += bdov
-    bdss, bdse = opt("border_smooth_ubeg"), opt("border_smooth_uend")
-    if bdss > 0:
-        urel = np.maximum(0.0, pu - ubeg)
-        m = bdss > urel
-        res[m] = urel[m] / bdss * (res[m] - zr[0]) + zr[0]
-    if bdse > 0:
-        urel = np.maximum(0.0, uend - pu)
-        m = bdse > urel
-        res[m] = urel[m] / bdse * (res[m] - zr[-1]) + zr[-1]
-    if bdmu == 0:
+    if not grid_only:
+        zr, b = p.zr, p.b
+        dzr = zr[iu + 1] - zr[iu]
+        db = b[iu + 1] - b[iu]
+        vc = _clip(pv, vmin, vmax)
+        bb = b[iu] + tu * db
+        res += zr[iu] + tu * dzr + vc * bb
+        if grad:
+            gu += np.where(out_u, 0.0, (dzr + vc * db) / uinc)
+            gv += np.where(out_v, 0.0, bb)
+        if p.bdmu == 1:
+            res[out_u] = p.bdou
+            if grad:
+                gu[out_u] = 0.0
+                gv[out_u] = 0.0
+        elif p.bdmu == 2 and p.bdou != 0:
+            res[out_u] += p.bdou
+        if p.bdmv == 1:
+            res[out_v] = p.bdov
+            if grad:
+                gu[out_v] = 0.0
+                gv[out_v] = 0.0
+        elif p.bdmv == 2 and p.bdov != 0:
+            res[out_v] += p.bdov
+        if p.bdss > 0:  # smoothing zone at the start: blend towards the start elevation
+            urel = np.maximum(0.0, pu - ubeg)
+            m = p.bdss > urel
+            w = urel[m] / p.bdss
+            if grad:
+                gu[m] = w * gu[m] + (res[m] - zr[0]) / p.bdss * (pu[m] > ubeg)
+                gv[m] = w * gv[m]
+            res[m] = w * (res[m] - zr[0]) + zr[0]
+        if p.bdse > 0:  # smoothing zone at the end
+            urel = np.maximum(0.0, uend - pu)
+            m = p.bdse > urel
+            w = urel[m] / p.bdse
+            if grad:
+                gu[m] = w * gu[m] - (res[m] - zr[-1]) / p.bdse * (pu[m] < uend)
+                gv[m] = w * gv[m]
+            res[m] = w * (res[m] - zr[-1]) + zr[-1]
+
+    if p.bdmu == 0:
         res[out_u] = np.nan
-    if bdmv == 0:
+    if p.bdmv == 0:
         res[out_v] = np.nan
-    return res
+    if not grad:
+        return res
+    if su is not None:
+        gu *= su
+    if sv is not None:
+        gv *= sv
+    if p.bdmu == 0:
+        gu[out_u] = gv[out_u] = np.nan
+    if p.bdmv == 0:
+        gu[out_v] = gv[out_v] = np.nan
+    return res, gu, gv
 
 
 # ---------------------------------------------------------------------------
-# u, v -> x, y
+# u, v -> x, y (and the jacobian of this mapping)
 # ---------------------------------------------------------------------------
 
-def _corner_normals(road):
+def _corner_normals(p):
     """Scaled normals at the start (n1) and the end (n2) of each interval."""
-    cache = road._cache
+    cache = p.cache
     if "normals" in cache:
         return cache["normals"]
-    x, y = road.x, road.y
+    x, y = p.x, p.y
     nu = x.size
     dx, dy = np.diff(x), np.diff(y)
     ln = np.hypot(dx, dy)
@@ -245,61 +350,119 @@ def _corner_normals(road):
         # end normal of intervals 0 .. nu-3
         dot2 = np.sum(a * n12[:-1], axis=1)
         n2[:-1] = a / dot2[:, None]
-    cache["normals"] = (n1, n2)
-    return n1, n2
+    cache["normals"] = (np.ascontiguousarray(n1), np.ascontiguousarray(n2))
+    return cache["normals"]
 
 
 def uv_to_xy(road, pu, pv):
     """Inertial position (x, y) of road coordinates (u, v)."""
+    p = params(road)
     pu = np.asarray(pu, dtype=np.float64).ravel()
     pv = np.asarray(pv, dtype=np.float64).ravel()
-    return _chunked(lambda a, b: _uv_to_xy(road, a, b), pu.size, pu, pv)
+    return _chunked(lambda a, b: _uv_to_xy(p, a, b, False), pu.size, pu, pv)
 
 
-def _uv_to_xy(road, pu, pv):
-    ubeg, uinc = road.u_start, road.u_inc
-    if road.is_straight:
-        c, s = np.cos(road.phi_start), np.sin(road.phi_start)
+def _uv_to_xy(p, pu, pv, jac):
+    """Positions; with ``jac=True`` also the derivatives dx/du, dy/du, dx/dv, dy/dv."""
+    ubeg, uinc = p.ubeg, p.uinc
+    if p.straight:
+        c, s = p.pbc, p.pbs
         du = pu - ubeg
-        return road.x[0] + c * du - s * pv, road.y[0] + s * du + c * pv
-    pu = _map_closed(road, pu)
-    x, y = road.x, road.y
+        px, py = p.x[0] + c * du - s * pv, p.y[0] + s * du + c * pv
+        if not jac:
+            return px, py
+        one = np.ones_like(pu)
+        return px, py, c * one, s * one, -s * one, c * one
+    pu = p.map_closed(pu)
+    x, y = p.x, p.y
     nu = x.size
     ui = (pu - ubeg) / uinc
-    iu = np.clip(np.floor(ui), 0, nu - 2).astype(np.int64)
+    iu = _clip(np.floor(ui), 0, nu - 2).astype(np.int64)
     t = ui - iu
-    n1, n2 = _corner_normals(road)
-    xa = x[iu] + pv * n1[iu, 0]
-    ya = y[iu] + pv * n1[iu, 1]
-    xb = x[iu + 1] + pv * n2[iu, 0]
-    yb = y[iu + 1] + pv * n2[iu, 1]
+    n1, n2 = _corner_normals(p)
+    n1x, n1y = n1[iu, 0], n1[iu, 1]
+    n2x, n2y = n2[iu, 0], n2[iu, 1]
+    xa = x[iu] + pv * n1x
+    ya = y[iu] + pv * n1y
+    xb = x[iu + 1] + pv * n2x
+    yb = y[iu + 1] + pv * n2y
     px = (xb - xa) * t + xa
     py = (yb - ya) * t + ya
+    if jac:
+        xu, yu = (xb - xa) / uinc, (yb - ya) / uinc
+        xv, yv = n1x + t * (n2x - n1x), n1y + t * (n2y - n1y)
     before = t < 0
     if before.any():
-        c, s = np.cos(road.phi_start), np.sin(road.phi_start)
+        c, s = p.pbc, p.pbs
         du = t[before] * uinc
         px[before] = x[0] + du * c - pv[before] * s
         py[before] = y[0] + du * s + pv[before] * c
+        if jac:
+            xu[before], yu[before], xv[before], yv[before] = c, s, -s, c
     after = t > 1
     if after.any():
-        c, s = np.cos(road.phi_end), np.sin(road.phi_end)
+        c, s = p.pec, p.pes
         du = (t[after] - 1) * uinc
         px[after] = x[-1] + du * c - pv[after] * s
         py[after] = y[-1] + du * s + pv[after] * c
-    return px, py
+        if jac:
+            xu[after], yu[after], xv[after], yv[after] = c, s, -s, c
+    if not jac:
+        return px, py
+    return px, py, xu, yu, xv, yv
+
+
+# ---------------------------------------------------------------------------
+# normal vector of the surface
+# ---------------------------------------------------------------------------
+
+def uv_to_normal(road, pu, pv):
+    """Elevation and unit normal (nx, ny, nz) of the road surface, in the x/y/z frame."""
+    p = params(road)
+    pu = np.asarray(pu, dtype=np.float64).ravel()
+    pv = np.asarray(pv, dtype=np.float64).ravel()
+    return _chunked(lambda a, b: _uv_to_normal(p, a, b), pu.size, pu, pv)
+
+
+def _uv_to_normal(p, pu, pv):
+    z, gu, gv = _uv_to_z(p, pu, pv, False, True)
+    _, _, xu, yu, xv, yv = _uv_to_xy(p, pu, pv, True)
+    # chain rule: dz/du = zx xu + zy yu, dz/dv = zx xv + zy yv
+    det = xu * yv - yu * xv
+    zx = (gu * yv - yu * gv) / det
+    zy = (xu * gv - gu * xv) / det
+    inv = 1.0 / np.sqrt(1.0 + zx * zx + zy * zy)
+    return z, -zx * inv, -zy * inv, inv
 
 
 # ---------------------------------------------------------------------------
 # x, y -> u, v
 # ---------------------------------------------------------------------------
 
-def _kdtree(road):
-    cache = road._cache
-    if "kdtree" not in cache:
-        from scipy.spatial import cKDTree
-        cache["kdtree"] = cKDTree(np.column_stack((road.x, road.y)))
-    return cache["kdtree"]
+def _nearest_points(p, px, py):
+    """Index of the closest reference line point of every (x, y) point."""
+    cache = p.cache
+    try:
+        if "kdtree" not in cache:
+            from scipy.spatial import cKDTree
+            cache["kdtree"] = cKDTree(np.column_stack((p.x, p.y)))
+        return cache["kdtree"].query(np.column_stack((px, py)))[1]
+    except ImportError:
+        pass
+    # numpy only: closest point of a coarse sample, then of its neighbourhood
+    x, y = p.x, p.y
+    nu = x.size
+    step = max(1, nu // 2000)
+    coarse = np.arange(0, nu, step)
+    out = np.empty(px.size, dtype=np.int64)
+    win = np.arange(-step, step + 1)
+    for s in range(0, px.size, 2048):
+        qx, qy = px[s:s + 2048, None], py[s:s + 2048, None]
+        k0 = coarse[np.argmin((qx - x[coarse]) ** 2 + (qy - y[coarse]) ** 2, axis=1)]
+        cand = np.clip(k0[:, None] + win[None, :], 0, nu - 1)
+        k = np.argmin((qx - x[cand]) ** 2 + (qy - y[cand]) ** 2, axis=1)
+        out[s:s + 2048] = cand[np.arange(cand.shape[0]), k]
+    return out
 
 
 def xy_to_uv(road, px, py, u_hint=None):
@@ -308,64 +471,69 @@ def xy_to_uv(road, px, py, u_hint=None):
     Parameters
     ----------
     u_hint : array_like, optional
-        Approximate u of each point. Useful when the road passes several
-        times close to the same place (crossings, overpasses): the search
-        then starts at this u instead of the closest reference line point.
+        Approximate u of the points (one value for all of them, or one per
+        point). The search then starts there instead of at the closest
+        reference line point: faster, and needed when the road passes
+        several times close to the same place (crossings, overpasses).
     """
+    p = params(road)
     px = np.asarray(px, dtype=np.float64).ravel()
     py = np.asarray(py, dtype=np.float64).ravel()
     if u_hint is None:
-        return _chunked(lambda a, b: _xy_to_uv(road, a, b, None), px.size, px, py)
+        return _chunked(lambda a, b: _xy_to_uv(p, a, b, None), px.size, px, py)
     uh = np.broadcast_to(np.asarray(u_hint, dtype=np.float64), px.shape).ravel()
-    return _chunked(lambda a, b, c: _xy_to_uv(road, a, b, c), px.size, px, py, uh)
+    return _chunked(lambda a, b, c: _xy_to_uv(p, a, b, c), px.size, px, py, uh)
 
 
-def _xy_to_uv(road, px, py, u_hint):
-    ubeg, uinc = road.u_start, road.u_inc
-    x0, y0 = road.x[0], road.y[0]
-    pbc, pbs = np.cos(road.phi_start), np.sin(road.phi_start)
-    if road.is_straight:
+def _xy_to_uv(p, px, py, u_hint):
+    ubeg, uinc = p.ubeg, p.uinc
+    x0, y0 = p.x[0], p.y[0]
+    pbc, pbs = p.pbc, p.pbs
+    if p.straight:
         dx, dy = px - x0, py - y0
         return ubeg + pbc * dx + pbs * dy, -pbs * dx + pbc * dy
-    x, y = road.x, road.y
+    x, y = p.x, p.y
     nu = x.size
     if u_hint is None:
-        _, k = _kdtree(road).query(np.column_stack((px, py)))
-        j = np.clip(k - 1, 0, nu - 2)
+        j = _clip(_nearest_points(p, px, py) - 1, 0, nu - 2)
     else:
-        j = np.clip(np.floor((u_hint - ubeg) / uinc), 0, nu - 2).astype(np.int64)
+        j = _clip(np.floor((u_hint - ubeg) / uinc), 0, nu - 2).astype(np.int64)
+        # refine the hint of every point by projection on the local tangent
+        s = ((px - x[j]) * (x[j + 1] - x[j]) + (py - y[j]) * (y[j + 1] - y[j])) / (uinc * uinc)
+        j = _clip(j + np.floor(s).astype(np.int64), 0, nu - 2)
 
-    def tests(jj, qx, qy):
-        x0_, y0_ = x[np.maximum(jj - 1, 0)], y[np.maximum(jj - 1, 0)]
-        x1, y1 = x[jj], y[jj]
-        x2, y2 = x[jj + 1], y[jj + 1]
-        j3 = np.minimum(jj + 2, nu - 1)
-        x3, y3 = x[j3], y[j3]
-        hdf = (qx - x2) * (x3 - x1) + (qy - y2) * (y3 - y1)
-        hdb = (qx - x1) * (x2 - x0_) + (qy - y1) * (y2 - y0_)
-        return hdf, hdb
+    def corners(jj):
+        jm, j3 = np.maximum(jj - 1, 0), np.minimum(jj + 2, nu - 1)
+        return x[jm], y[jm], x[jj], y[jj], x[jj + 1], y[jj + 1], x[j3], y[j3]
 
-    active = np.arange(px.size)
-    for _ in range(nu + 1):
-        jj = j[active]
-        hdf, hdb = tests(jj, px[active], py[active])
-        fwd = (hdf > 0) & (jj < nu - 2)
-        bwd = (hdb < 0) & (jj > 0) & ~fwd
+    # walk interval by interval until the point lies between the normals of both ends
+    first = True
+    active = None
+    while True:
+        if first:
+            x0_, y0_, x1, y1, x2, y2, x3, y3 = corners(j)
+            hdf = (px - x2) * (x3 - x1) + (py - y2) * (y3 - y1)
+            hdb = (px - x1) * (x2 - x0_) + (py - y1) * (y2 - y0_)
+            jj, f, b = j, hdf, hdb
+        else:
+            jj = j[active]
+            qx, qy = px[active], py[active]
+            c0x, c0y, c1x, c1y, c2x, c2y, c3x, c3y = corners(jj)
+            f = (qx - c2x) * (c3x - c1x) + (qy - c2y) * (c3y - c1y)
+            b = (qx - c1x) * (c2x - c0x) + (qy - c1y) * (c2y - c0y)
+        fwd = (f > 0) & (jj < nu - 2)
+        bwd = (b < 0) & (jj > 0) & ~fwd
         move = fwd | bwd
         if not move.any():
             break
-        j[active[fwd]] += 1
-        j[active[bwd]] -= 1
-        active = active[move]
-
-    jm1 = np.maximum(j - 1, 0)
-    j3 = np.minimum(j + 2, nu - 1)
-    x0_, y0_ = x[jm1], y[jm1]
-    x1, y1 = x[j], y[j]
-    x2, y2 = x[j + 1], y[j + 1]
-    x3, y3 = x[j3], y[j3]
-    hdf = (px - x2) * (x3 - x1) + (py - y2) * (y3 - y1)
-    hdb = (px - x1) * (x2 - x0_) + (py - y1) * (y2 - y0_)
+        idx = np.flatnonzero(move) if first else active[move]
+        j[idx] += np.where(fwd[move], 1, -1)
+        active = idx
+        first = False
+    if not first:  # some points moved: final values for every point
+        x0_, y0_, x1, y1, x2, y2, x3, y3 = corners(j)
+        hdf = (px - x2) * (x3 - x1) + (py - y2) * (y3 - y1)
+        hdb = (px - x1) * (x2 - x0_) + (py - y1) * (y2 - y0_)
     x2x1, y2y1 = x2 - x1, y2 - y1
     with np.errstate(invalid="ignore", divide="ignore"):
         v = (x2x1 * (py - y1) - y2y1 * (px - x1)) / np.hypot(x2x1, y2y1)
@@ -373,19 +541,16 @@ def _xy_to_uv(road, px, py, u_hint):
         tb = ((x3 - x1) * (x2 - px) + (y3 - y1) * (y2 - py)) / ((x3 - x1) * x2x1 + (y3 - y1) * y2y1)
         u = ubeg + (j + ta / (ta + tb)) * uinc
 
-    closed = int(road.get_option("refline_continuation")) == 1
-    ubex, uenx, ulex = closure(road) if closed else (0, 0, 0)
-    uend = road.u_end
-    xe, ye = road.x[-1], road.y[-1]
-    pec, pes = np.cos(road.phi_end), np.sin(road.phi_end)
-
+    uend = p.uend
+    xe, ye = x[-1], y[-1]
+    pec, pes = p.pec, p.pes
     before = hdb < 0
     if before.any():
         dx, dy = px[before] - x0, py[before] - y0
         ub = ubeg + pbc * dx + pbs * dy
         vb = -pbs * dx + pbc * dy
-        if closed and ulex != 0:
-            sw = (ub < ubex) | ((ub > uend) & (ub < uenx))
+        if p.closed:
+            sw = (ub < p.ubex) | ((ub > uend) & (ub < p.uenx))
             dx2, dy2 = px[before][sw] - xe, py[before][sw] - ye
             ub[sw] = uend + pec * dx2 + pes * dy2
             vb[sw] = -pes * dx2 + pec * dy2
@@ -395,8 +560,8 @@ def _xy_to_uv(road, px, py, u_hint):
         dx, dy = px[after] - xe, py[after] - ye
         ua = uend + pec * dx + pes * dy
         va = -pes * dx + pec * dy
-        if closed and ulex != 0:
-            sw = ua > uenx
+        if p.closed:
+            sw = ua > p.uenx
             dx2, dy2 = px[after][sw] - x0, py[after][sw] - y0
             ua[sw] = ubeg + pbc * dx2 + pbs * dy2
             va[sw] = -pbs * dx2 + pbc * dy2
@@ -410,39 +575,42 @@ def _xy_to_uv(road, px, py, u_hint):
 
 def u_to_phi(road, pu):
     """Heading angle (rad) of the reference line at u."""
+    p = params(road)
     pu = np.asarray(pu, dtype=np.float64).ravel()
-    if road.is_straight:
-        return np.full(pu.shape, road.phi_start)
-    pu = _map_closed(road, pu)
+    if p.straight:
+        return np.full(pu.shape, p.phi_start)
+    pu = p.map_closed(pu)
     phi = road.phi
-    iu = np.floor((pu - road.u_start) / road.u_inc).astype(np.int64)
+    iu = np.floor((pu - p.ubeg) / p.uinc).astype(np.int64)
     out = phi[np.clip(iu, 0, phi.size - 1)]
-    out = np.where(iu < 0, road.phi_start, out)
-    return np.where(iu > phi.size - 1, road.phi_end, out)
+    out = np.where(iu < 0, p.phi_start, out)
+    return np.where(iu > phi.size - 1, p.phi_end, out)
 
 
 def u_to_curvature(road, pu):
     """Curvature (1/m, positive when turning left) of the reference line at u."""
+    p = params(road)
     pu = np.asarray(pu, dtype=np.float64).ravel()
     rc = road.curvature
-    if road.is_straight or rc.size == 0:
+    if p.straight or rc.size == 0:
         return np.zeros(pu.shape)
-    pu = _map_closed(road, pu)
-    iu = np.floor((pu - road.u_start) / road.u_inc).astype(np.int64)
+    pu = p.map_closed(pu)
+    iu = np.floor((pu - p.ubeg) / p.uinc).astype(np.int64)
     ok = (iu >= 1) & (iu <= rc.size)
     return np.where(ok, rc[np.clip(iu - 1, 0, rc.size - 1)], 0.0)
 
 
 def uv_to_index(road, pu, pv=None):
     """Grid indices (0 based) of the cells containing (u, v), clipped to the grid."""
-    pu = _map_closed(road, np.asarray(pu, dtype=np.float64).ravel())
-    iu = np.minimum(np.floor(np.maximum((pu - road.u_start) / road.u_inc, 0)), road.nu - 1).astype(np.int64)
+    p = params(road)
+    pu = p.map_closed(np.asarray(pu, dtype=np.float64).ravel())
+    iu = np.minimum(np.floor(np.maximum((pu - p.ubeg) / p.uinc, 0)), p.nu - 1).astype(np.int64)
     if pv is None:
         return iu
     pv = np.asarray(pv, dtype=np.float64).ravel()
-    v = road.v
-    if road.v_inc is not None:
-        iv = np.minimum(np.floor(np.maximum((pv - v[0]) / road.v_inc, 0)), road.nv - 1).astype(np.int64)
+    v = p.v
+    if p.vinc is not None:
+        iv = np.minimum(np.floor(np.maximum((pv - v[0]) / p.vinc, 0)), p.nv - 1).astype(np.int64)
     else:
-        iv = np.clip(np.searchsorted(v, np.clip(pv, v[0], v[-1]), side="right") - 1, 0, road.nv - 1)
+        iv = np.clip(np.searchsorted(v, np.clip(pv, v[0], v[-1]), side="right") - 1, 0, p.nv - 1)
     return iu, iv

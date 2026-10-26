@@ -28,6 +28,7 @@ import warnings
 import numpy as np
 from numpy.polynomial import Polynomial
 
+from ._optional import need
 from .road import CrgRoad
 
 __all__ = ["flat_road", "from_function", "synthetic_road", "reference_line_from_points",
@@ -223,7 +224,7 @@ def reference_line_from_points(x, y, u_inc=0.1, smoothing=None, knot_spacing=2.0
     x_ref, y_ref : numpy.ndarray
         Points of the reference line, ``u_inc`` apart.
     """
-    from scipy.interpolate import make_lsq_spline
+    make_lsq_spline = need("scipy.interpolate", "reference_line_from_points()").make_lsq_spline
 
     from .smoothing import smoothing_spline
 

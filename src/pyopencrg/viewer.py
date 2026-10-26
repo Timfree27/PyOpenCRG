@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._optional import need
+
 __all__ = ["view3d"]
 
 _COLORS = {
@@ -31,12 +33,7 @@ _COLORS = {
 
 
 def _pyvista():
-    try:
-        import pyvista as pv
-    except ImportError as exc:  # pragma: no cover - depends on the installation
-        raise ImportError("the 3D viewer needs PyVista: pip install \"pyopencrg[viewer]\" "
-                          "(or use road.show() for matplotlib figures)") from exc
-    return pv
+    return need("pyvista", "view3d()")
 
 
 def _indices(n, step):

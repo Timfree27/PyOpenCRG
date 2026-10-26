@@ -18,6 +18,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ._optional import need
+
 __all__ = ["stats", "normal_map", "artifact_mask", "remove_artifacts", "nan_regions", "fill_holes",
            "find_peaks", "PeakResult"]
 
@@ -80,7 +82,7 @@ def artifact_mask(road, normal_tol: float = 0.3, radius: float = 15) -> np.ndarr
     radius : float
         Distance around the artifacts (in grid points) also included.
     """
-    from scipy.ndimage import distance_transform_edt
+    distance_transform_edt = need("scipy.ndimage", "remove_artifacts()").distance_transform_edt
 
     bad = normal_map(road) < normal_tol
     if not bad.any() or radius <= 0:
@@ -133,7 +135,8 @@ def nan_regions(z, margin: int = 50):
     list of (iu0, iu1, iv0, iv1)
         Index ranges (both ends included).
     """
-    from scipy.ndimage import find_objects, label
+    ndi = need("scipy.ndimage", "nan_regions()")
+    find_objects, label = ndi.find_objects, ndi.label
 
     if hasattr(z, "z"):
         z = z.z
@@ -152,7 +155,7 @@ def nan_regions(z, margin: int = 50):
 
 
 def _fill_patch(patch, method, max_points, du, dv):
-    from scipy.interpolate import griddata
+    griddata = need("scipy.interpolate", "fill_holes()").griddata
 
     nan = np.isnan(patch)
     if nan.all():
@@ -164,7 +167,7 @@ def _fill_patch(patch, method, max_points, du, dv):
     q = np.column_stack((qi * du, qj * dv))
     out = patch.copy()
     if method == "rbf":
-        from scipy.interpolate import RBFInterpolator
+        RBFInterpolator = need("scipy.interpolate", "fill_holes()").RBFInterpolator
         if pts.shape[0] > max_points:
             step = int(np.ceil(pts.shape[0] / max_points))
             pts, vals = pts[::step], vals[::step]
@@ -251,8 +254,9 @@ def find_peaks(road, threshold: float = 0.5, size: int = 3, iu=None, iv=None) ->
     -------
     PeakResult
     """
-    from scipy.ndimage import median_filter, minimum_filter
-    from scipy.signal import correlate2d
+    ndi = need("scipy.ndimage", "find_peaks()")
+    median_filter, minimum_filter = ndi.median_filter, ndi.minimum_filter
+    correlate2d = need("scipy.signal", "find_peaks()").correlate2d
 
     from .edit import _index_range
 

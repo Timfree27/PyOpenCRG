@@ -20,17 +20,18 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering",
 ]
+# the core (read, check, evaluate, edit, write) only needs numpy
 dependencies = [
     "numpy>=1.21",
-    "scipy>=1.8",
-    "matplotlib>=3.5",
 ]
 
 [project.optional-dependencies]
-image = ["pillow>=9"]
-viewer = ["pyvista>=0.38"]
+scipy = ["scipy>=1.8"]          # smoothing, filters, re-sampling of curved roads, scan repair, import of point clouds
+plot = ["matplotlib>=3.5"]      # figures and image export
+viewer = ["pyvista>=0.38"]      # interactive 3D viewer
+image = ["pillow>=9"]           # engrave_image()
+all = ["scipy>=1.8", "matplotlib>=3.5", "pyvista>=0.38", "pillow>=9"]
 test = ["pytest>=7"]
-all = ["pillow>=9", "pyvista>=0.38"]
 
 [project.urls]
 Homepage = "https://github.com/Timfree27/PyOpenCRG"
@@ -47,7 +48,7 @@ path = "src/pyopencrg/__init__.py"
 packages = ["src/pyopencrg"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/pyopencrg", "tests", "docs", "examples", "README.md", "LICENSE", "NOTICE", "CITATION.cff", "pyproject.toml"]
+include = ["src/pyopencrg", "tests", "docs", "examples", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE", "CITATION.cff", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

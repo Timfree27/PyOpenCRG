@@ -297,17 +297,18 @@ def _binary_view(path, offset, nc, fmt, errors, warns=None):
     return view[:nr]
 
 
-def _take(view, rows, cols, block=8192):
-    """Copy ``view[rows][:, cols]`` to a float64 array, a few thousand records at a time."""
+def _take(view, rows, cols, block=8192, dtype=np.float64):
+    """Copy ``view[rows][:, cols]`` to a new array, a few thousand records at a time."""
     idx = np.arange(view.shape[0])[rows]
-    out = np.empty((idx.size, len(cols)), dtype=np.float64)
+    out = np.empty((idx.size, len(cols)), dtype=dtype)
     for k in range(0, idx.size, block):
         sel = idx[k:k + block]
         out[k:k + sel.size] = view[sel[0]:sel[-1] + 1][sel - sel[0]][:, cols]
     return out
 
 
-def _ascii_stream(path, offset, nc, nchar, rows, cols, full_cols, warns, errors, chunk_bytes=64 << 20):
+def _ascii_stream(path, offset, nc, nchar, rows, cols, full_cols, warns, errors, chunk_bytes=64 << 20,
+                  dtype=np.float64):
     """Parse a text data part chunk by chunk, keeping only the selected records."""
     vpl = 80 // nchar
     lpr = -(-nc // vpl)
@@ -335,14 +336,14 @@ def _ascii_stream(path, offset, nc, nchar, rows, cols, full_cols, warns, errors,
         data = parse_ascii_data(part, nc, nchar, warns, errors)
         idx = np.arange(rec0, rec0 + data.shape[0])
         rec0 += data.shape[0]
-        sel_parts.append(data[_row_mask(idx, rows)][:, cols])
+        sel_parts.append(data[_row_mask(idx, rows)][:, cols].astype(dtype, copy=False))
         full_parts.append(data[:, list(full_cols)])
     if not sel_parts:
         return np.zeros((0, len(cols))), np.zeros((0, len(full_cols))), 0
     return np.concatenate(sel_parts), np.concatenate(full_parts), rec0
 
 
-def read_ipl_data(ipl, rows=None, columns=None, full_columns=(), stop_on_error=False):
+def read_ipl_data(ipl, rows=None, columns=None, full_columns=(), stop_on_error=False, dtype=np.float64):
     """Read the data of an IPLOS file whose header was read with ``read_ipl(path, meta_only=True)``.
 
     Only the requested part is loaded in memory, so that very large files
@@ -360,6 +361,8 @@ def read_ipl_data(ipl, rows=None, columns=None, full_columns=(), stop_on_error=F
     stop_on_error : bool
         Raise :class:`CrgFormatError` as soon as the binary data is found to be
         corrupted, before anything is loaded in memory.
+    dtype : numpy dtype
+        Type of the ``selected`` array (``full`` is always float64).
 
     Returns
     -------
@@ -378,14 +381,14 @@ def read_ipl_data(ipl, rows=None, columns=None, full_columns=(), stop_on_error=F
         if stop_on_error and ipl.errors:
             del view
             raise CrgCorruptedError(ipl.filename, ipl.errors)
-        sel = _take(view, rows, columns)
+        sel = _take(view, rows, columns, dtype=dtype)
         full = _take(view, slice(None), full_columns) if full_columns else np.zeros((view.shape[0], 0))
         n = view.shape[0]
         del view
         return sel, full, n
     if fmt in ("LRFI", "LDFI"):
         return _ascii_stream(ipl.filename, ipl.data_offset, nc, 10 if fmt == "LRFI" else 20, rows, columns,
-                             full_columns, ipl.warnings, ipl.errors)
+                             full_columns, ipl.warnings, ipl.errors, dtype=dtype)
     raise CrgFormatError(f"{ipl.filename}: data format '{fmt}' is not supported (use one of {list(FORMATS)})")
 
 
@@ -733,24 +736,12 @@ def _steps(step):
     return int(su), int(sv)
 
 
-def read_crg_file(path: str | os.PathLike, u=None, step=1, stop_on_error=False) -> CrgFileContent:
-    """Read an OpenCRG file and decode its header and channels.
+def _decode_crg(path):
+    """Decode the header and the channel layout of an OpenCRG file (no data is read).
 
-    Use :func:`pyopencrg.read` instead, which returns a ready to use
-    :class:`pyopencrg.CrgRoad`.
-
-    Parameters
-    ----------
-    u : (float, float), optional
-        Read only the cross sections between these u values (m).
-    step : int or (int, int)
-        Keep one cross section out of ``step`` (and one long section out of
-        ``step``), to get a light preview of a very large file.
-    stop_on_error : bool
-        Refuse corrupted binary data before loading it.
+    Returns (content without data, IplData of the data file, layout dict).
     """
     path = os.fspath(path)
-    su, sv = _steps(step)
     ipl = read_ipl(path, meta_only=True)
     out = CrgFileContent(filename=path, fmt=ipl.fmt)
     struct = ipl.struct
@@ -883,19 +874,64 @@ def read_crg_file(path: str | os.PathLike, u=None, step=1, stop_on_error=False) 
         v_min = head.get("long_section_v_right", -v_inc * (nv - 1) / 2)
         v = v_min + np.arange(nv) * v_inc
 
+    layout = dict(v=v, z_cols=[sc[1] for sc in secs], full_cols=[c for c in (i_phi, i_slope, i_bank) if c is not None],
+                  has_phi=i_phi is not None, has_slope=i_slope is not None, has_bank=i_bank is not None,
+                  u_start=float(u_start), u_inc=float(u_inc), inc_from_end=inc_from_end)
+    return out, ipl, layout
+
+
+def set_reference_channels(out, full, layout):
+    """Store the reference line channels (array of all records) in the content."""
+    k = 0
+    if layout["has_phi"]:
+        out.phi = full[1:, k].copy()  # first value is ignored by definition
+        k += 1
+    if layout["has_slope"]:
+        out.slope = full[1:, k].copy()
+        k += 1
+    if layout["has_bank"]:
+        out.banking = full[:, k].copy()
+
+
+def read_crg_file(path: str | os.PathLike, u=None, step=1, stop_on_error=False, dtype=np.float64) -> CrgFileContent:
+    """Read an OpenCRG file and decode its header and channels.
+
+    Use :func:`pyopencrg.read` instead, which returns a ready to use
+    :class:`pyopencrg.CrgRoad`.
+
+    Parameters
+    ----------
+    u : (float, float), optional
+        Read only the cross sections between these u values (m).
+    step : int or (int, int)
+        Keep one cross section out of ``step`` (and one long section out of
+        ``step``), to get a light preview of a very large file.
+    stop_on_error : bool
+        Refuse corrupted binary data before loading it.
+    dtype : numpy dtype
+        Type of the elevation grid (float64 or float32).
+    """
+    path = os.fspath(path)
+    su, sv = _steps(step)
+    out, ipl, layout = _decode_crg(path)
+    head = out.head
+    v, secs = layout["v"], layout["z_cols"]
+    nv = v.size
+    u_start, u_inc, inc_from_end = layout["u_start"], layout["u_inc"], layout["inc_from_end"]
+
     # --- selection, then reading of the data
     keep_v = np.arange(0, nv, sv)
     out.v = v[keep_v]
-    z_cols = [secs[j][1] for j in keep_v]
+    z_cols = [secs[j] for j in keep_v]
     i0, i1 = 0, None
     if u is not None and not inc_from_end:
         if u[0] is not None:
             i0 = max(0, int(np.ceil((u[0] - u_start) / u_inc - 1e-9)))
         if u[1] is not None:
             i1 = int(np.floor((u[1] - u_start) / u_inc + 1e-9)) + 1
-    full_cols = [c for c in (i_phi, i_slope, i_bank) if c is not None]
+    full_cols = layout["full_cols"]
     try:
-        z, full, nrec = read_ipl_data(ipl, slice(i0, i1, su), z_cols, full_cols, stop_on_error)
+        z, full, nrec = read_ipl_data(ipl, slice(i0, i1, su), z_cols, full_cols, stop_on_error, dtype)
     except MemoryError:
         raise MemoryError(f"{path}: not enough memory to load this road. Read a part of it with "
                           f"crg.read(path, u=(u_first, u_last)) or a preview with crg.read(path, step=4).") from None
@@ -921,15 +957,7 @@ def read_crg_file(path: str | os.PathLike, u=None, step=1, stop_on_error=False) 
     out.u_start, out.u_inc = float(u_start), float(u_inc)
     out.n_records = nrec
     out.z = np.ascontiguousarray(z)
-    k = 0
-    if i_phi is not None:
-        out.phi = full[1:, k].copy()  # first value is ignored by definition
-        k += 1
-    if i_slope is not None:
-        out.slope = full[1:, k].copy()
-        k += 1
-    if i_bank is not None:
-        out.banking = full[:, k].copy()
+    set_reference_channels(out, full, layout)
     return out
 
 

@@ -16,6 +16,7 @@ from datetime import datetime
 
 import numpy as np
 
+from ._optional import need
 from .keywords import DEFAULT_MODIFIERS
 from .road import integrate_heading, integrate_slope
 
@@ -292,7 +293,7 @@ def filter_grid(road, method="mean", size=(3, 3), weight=1.0, repeat=1, iu=None,
 
     See :meth:`pyopencrg.CrgRoad.filter` for the parameters.
     """
-    from scipy.signal import convolve2d
+    convolve2d = need("scipy.signal", "filter()").convolve2d
 
     i0, i1 = _index_range(iu, road.nu, "u")
     j0, j1 = _index_range(iv, road.nv, "v")
@@ -346,7 +347,7 @@ def _new_v(road, v_inc, v):
 
 def resample(road, u_inc=None, v_inc=None, v=None):
     """Re-sample a road on a new grid (see :meth:`pyopencrg.CrgRoad.resample`)."""
-    from scipy.interpolate import CubicSpline
+    CubicSpline = need("scipy.interpolate", "resample()").CubicSpline
 
     inc = road.u_inc if u_inc is None else float(u_inc)
     if inc <= 0:
@@ -640,7 +641,7 @@ def add_random(road, u_section, u_profile, v_section, v_profile, seed=0, amp_min
     u_smooth, v_smooth : float in [0, 1]
         Smoothing along u and v, as a fraction of the road length / width.
     """
-    from scipy.ndimage import uniform_filter
+    uniform_filter = need("scipy.ndimage", "add_random()").uniform_filter
 
     for name, val in (("u_smooth", u_smooth), ("v_smooth", v_smooth)):
         if not 0 <= val <= 1:
@@ -676,10 +677,7 @@ def engrave_image(road, image_path, height=0.01, width=1.0, u0=None, v0=None, ro
 
     See :meth:`pyopencrg.CrgRoad.engrave_image`.
     """
-    try:
-        from PIL import Image
-    except ImportError as exc:  # pragma: no cover
-        raise ImportError("engrave_image needs the Pillow package: pip install pillow") from exc
+    Image = need("PIL.Image", "engrave_image()")
     img = Image.open(image_path).convert("L")
     if rotate:
         img = img.rotate(90, expand=True)
