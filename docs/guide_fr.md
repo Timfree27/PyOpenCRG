@@ -102,6 +102,11 @@ with crg.open("scan.crg") as f:
         morceau = f.read(u=(u0, u0 + 100))       # 100 m à la fois, avec les u de la piste entière
 ```
 
+Un morceau donne exactement les mêmes x, y, z que la piste entière. Avec `apply_mods=True`
+(`f.read(u=..., apply_mods=True)` ou `crg.read(chemin, u=..., apply_mods=True)`), les
+modificateurs sont calculés sur le fichier entier : le morceau est placé exactement là où il est
+dans la piste modifiée entière.
+
 Les fichiers texte (LRFI, LDFI) ne se lisent pas par morceaux : `open()` charge leur grille en
 mémoire. Pour un très gros fichier texte, convertissez-le une fois en binaire avec
 `crg.convert("scan.crg", "scan_bin.crg")`.
@@ -164,12 +169,28 @@ plus rapide :
 ev = piste.evaluator()
 for pas in range(nb_pas):
     x, y = points_de_contact(pas)                       # votre simulation
-    z, nx, ny, nz = ev.xy_to_z(x, y, with_normal=True)  # environ 0,25 ms pour 640 points
+    z, nx, ny, nz = ev.xy_to_z(x, y, with_normal=True)  # environ 0,2 ms pour 640 points
 ```
 
 L'évaluateur se souvient de la dernière position de chaque point et repart de là. Si la piste
 repasse plusieurs fois au même endroit (croisement, pont), donnez le u approximatif de la roue :
 `piste.xy_to_z(x, y, u_hint=u_roue)`. Une seule valeur suffit pour tous les points.
+
+**Fichier plus gros que la mémoire** : `f.evaluator()` a les mêmes méthodes, mais ne garde en
+mémoire qu'une fenêtre de la piste. Quand un point arrive à moins de `margin` mètres d'un bout de
+la fenêtre, elle est relue autour des points (quelques millisecondes). Les résultats sont ceux de
+la piste entière (bords, zones de lissage et pistes fermées compris) : un point n'est jamais
+évalué en dehors de la fenêtre chargée.
+
+```python
+with crg.open("piste.crg") as f:
+    ev = f.evaluator(window=40.0, margin=10.0, apply_mods=True)   # 40 m en mémoire
+    for pas in range(nb_pas):
+        z, nx, ny, nz = ev.xy_to_z(x, y, with_normal=True)
+```
+
+Gardez le fichier ouvert (bloc `with`) tant que l'évaluateur sert. Vitesse de chaque méthode :
+`python benchmarks/bench_evaluation.py`.
 
 ## 5. Modifier une piste
 
@@ -221,6 +242,11 @@ deplacee = piste.move_to(x=0, y=0, z=0, phi=0)   # placer le début de piste à 
 
 Si le fichier n'a pas de bloc de modificateurs, OpenCRG applique des valeurs par défaut :
 NaN → dernière valeur valide, et début de piste ramené en (0, 0, 0) avec un cap nul.
+
+Pour un **morceau** de fichier, lisez-le avec `apply_mods=True` (`crg.read(chemin, u=...,
+apply_mods=True)` ou `f.read(u=..., apply_mods=True)`) : les modificateurs sont calculés sur le
+fichier entier. `morceau.apply_mods()` déplacerait le morceau par rapport à son propre début (un
+avertissement le signale).
 
 ## 7. Nettoyer une piste scannée
 

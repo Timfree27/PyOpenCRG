@@ -48,7 +48,7 @@ path = "src/pyopencrg/__init__.py"
 packages = ["src/pyopencrg"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/pyopencrg", "tests", "docs", "examples", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE", "CITATION.cff", "pyproject.toml"]
+include = ["src/pyopencrg", "tests", "docs", "examples", "benchmarks", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE", "CITATION.cff", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

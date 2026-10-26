@@ -135,6 +135,12 @@ class Params:
             self.ubex, self.uenx, self.ulex = closure(road)
             self.closed = self.ulex != 0
         self._road = road
+        # direct path for the points inside the grid (see _fast)
+        self.uinv = 1.0 / self.uinc
+        self.vinv = None if self.vinc is None else 1.0 / self.vinc
+        self.zf = self.z.reshape(-1) if self.z.flags.c_contiguous else None
+        self.fast = self.zf is not None and self.bdss <= 0 and self.bdse <= 0
+        self.dzr, self.db = np.diff(self.zr), np.diff(self.b)
 
     def map_closed(self, pu):
         if self.closed:
@@ -167,7 +173,9 @@ def uv_to_z(road, pu, pv, grid_only: bool = False):
     p = params(road)
     pu = np.asarray(pu, dtype=np.float64).ravel()
     pv = np.asarray(pv, dtype=np.float64).ravel()
-    return _chunked(lambda a, b: _uv_to_z(p, a, b, grid_only, False), pu.size, pu, pv)
+    if grid_only:
+        return _chunked(lambda a, b: _uv_to_z(p, a, b, True, False), pu.size, pu, pv)
+    return _surface(p, pu, pv, 0)
 
 
 def uv_to_z_gradient(road, pu, pv, grid_only: bool = False):
@@ -175,7 +183,116 @@ def uv_to_z_gradient(road, pu, pv, grid_only: bool = False):
     p = params(road)
     pu = np.asarray(pu, dtype=np.float64).ravel()
     pv = np.asarray(pv, dtype=np.float64).ravel()
-    return _chunked(lambda a, b: _uv_to_z(p, a, b, grid_only, True), pu.size, pu, pv)
+    if grid_only:
+        return _chunked(lambda a, b: _uv_to_z(p, a, b, True, True), pu.size, pu, pv)
+    return _surface(p, pu, pv, 1)
+
+
+def _surface(p, pu, pv, mode, cell=None):
+    """Elevation (mode 0), with its gradient (mode 1) or with the normal (mode 2).
+
+    ``cell``: the cells of the points, found by :func:`_xy_to_uv`.
+    """
+    if pu.size > _CHUNK:
+        return _chunked(lambda a, b: _surface(p, a, b, mode), pu.size, pu, pv)
+    res = _fast(p, pu, pv, mode, cell)
+    if res is not None:
+        return res
+    if mode == 2:
+        return _uv_to_normal(p, pu, pv)
+    return _uv_to_z(p, pu, pv, False, mode == 1)
+
+
+def _normals_xy(p):
+    """Components (n1x, n1y, n2x, n2y) of the corner normals (views, no copy)."""
+    n1, n2 = _corner_normals(p)
+    return n1[:, 0], n1[:, 1], n2[:, 0], n2[:, 1]
+
+
+def _fast(p, pu, pv, mode, cell=None):
+    """Direct computation for points inside the grid, or None when a point needs the general path.
+
+    The general path (:func:`_uv_to_z`, :func:`_uv_to_normal`) handles the
+    points outside the grid (border modes), NaN values, smoothing zones and
+    closed tracks. Most points of a simulation are inside the grid, away
+    from NaN values: for them the same interpolation is computed here with
+    fewer operations. The results are the same.
+    """
+    if not p.fast:
+        return None
+    nu, nv = p.nu, p.nv
+    if cell is None:
+        if p.closed:
+            return None
+        ui = (pu - p.ubeg) * p.uinv
+        if not (ui.min() >= 0.0 and ui.max() <= nu - 1):  # also False with NaN
+            return None
+        iu = ui.astype(np.int64)
+        np.minimum(iu, nu - 2, out=iu)
+        tu = ui - iu
+        geo = None
+    else:
+        iu, tu, geo = cell
+    if p.vinv is not None:
+        vi = (pv - p.vmin) * p.vinv
+        if not (vi.min() >= 0.0 and vi.max() <= nv - 1):
+            return None
+        iv = vi.astype(np.int64)
+        np.minimum(iv, nv - 2, out=iv)
+        tv = vi - iv
+        vinv = p.vinv
+    else:
+        if not (pv.min() >= p.vmin and pv.max() <= p.vmax):
+            return None
+        iv = np.searchsorted(p.v, pv, side="right") - 1
+        np.minimum(iv, nv - 2, out=iv)
+        v0 = p.v[iv]
+        vinv = 1.0 / (p.v[iv + 1] - v0)
+        tv = (pv - v0) * vinv
+    zf = p.zf
+    k = iu * nv + iv
+    z00 = zf[k]
+    z01 = zf[k + 1]
+    k += nv
+    z10 = zf[k]
+    z11 = zf[k + 1]
+    a10 = z10 - z00
+    a01 = z01 - z00
+    d11 = z11 - z10 - a01
+    e = d11 * tv + a10
+    res = e * tu + a01 * tv + z00
+    if np.isnan(res.sum()):  # a NaN corner: general path
+        return None
+    dzr, db = p.dzr[iu], p.db[iu]
+    bb = p.b[iu] + tu * db
+    res += p.zr[iu] + tu * dzr + pv * bb
+    if mode == 0:
+        return res
+    gu = (e + dzr + pv * db) * p.uinv
+    gv = (d11 * tu + a01) * vinv + bb
+    if mode == 1:
+        return res, gu, gv
+    if p.straight:  # derivatives of x, y: (c, s) along u, (-s, c) along v
+        c, s = p.pbc, p.pbs
+        zx = gu * c - gv * s
+        zy = gu * s + gv * c
+    else:
+        if geo is None:
+            n1x, n1y, n2x, n2y = _normals_xy(p)
+            x, y = p.x, p.y
+            j1 = iu + 1
+            geo = (x[iu], y[iu], x[j1], y[j1], n1x[iu], n1y[iu], n2x[iu], n2y[iu])
+        x1, y1, x2, y2, a1x, a1y, a2x, a2y = geo
+        dnx, dny = a2x - a1x, a2y - a1y
+        xu = (x2 - x1 + pv * dnx) * p.uinv
+        yu = (y2 - y1 + pv * dny) * p.uinv
+        xv = a1x + tu * dnx
+        yv = a1y + tu * dny
+        det = xu * yv - yu * xv
+        zx = (gu * yv - yu * gv) / det
+        zy = (xu * gv - gu * xv) / det
+    inv = 1.0 / np.sqrt(1.0 + zx * zx + zy * zy)
+    return res, -zx * inv, -zy * inv, inv
 
 
 def _wrap(t, length, reflect):
@@ -327,9 +444,13 @@ def _uv_to_z(p, pu, pv, grid_only, grad):
 def _corner_normals(p):
     """Scaled normals at the start (n1) and the end (n2) of each interval."""
     cache = p.cache
-    if "normals" in cache:
-        return cache["normals"]
-    x, y = p.x, p.y
+    if "normals" not in cache:
+        cache["normals"] = _line_normals(p.x, p.y)
+    return cache["normals"]
+
+
+def _line_normals(x, y):
+    """Scaled normals (n1, n2) at the start and the end of each interval of the line (x, y)."""
     nu = x.size
     dx, dy = np.diff(x), np.diff(y)
     ln = np.hypot(dx, dy)
@@ -350,8 +471,7 @@ def _corner_normals(p):
         # end normal of intervals 0 .. nu-3
         dot2 = np.sum(a * n12[:-1], axis=1)
         n2[:-1] = a / dot2[:, None]
-    cache["normals"] = (np.ascontiguousarray(n1), np.ascontiguousarray(n2))
-    return cache["normals"]
+    return np.ascontiguousarray(n1), np.ascontiguousarray(n2)
 
 
 def uv_to_xy(road, pu, pv):
@@ -421,18 +541,23 @@ def uv_to_normal(road, pu, pv):
     p = params(road)
     pu = np.asarray(pu, dtype=np.float64).ravel()
     pv = np.asarray(pv, dtype=np.float64).ravel()
-    return _chunked(lambda a, b: _uv_to_normal(p, a, b), pu.size, pu, pv)
+    return _surface(p, pu, pv, 2)
 
 
 def _uv_to_normal(p, pu, pv):
     z, gu, gv = _uv_to_z(p, pu, pv, False, True)
     _, _, xu, yu, xv, yv = _uv_to_xy(p, pu, pv, True)
+    return (z,) + _normal(gu, gv, xu, yu, xv, yv)
+
+
+def _normal(gu, gv, xu, yu, xv, yv):
+    """Unit normal from the slopes in u, v and the derivatives of x, y in u, v."""
     # chain rule: dz/du = zx xu + zy yu, dz/dv = zx xv + zy yv
     det = xu * yv - yu * xv
     zx = (gu * yv - yu * gv) / det
     zy = (xu * gv - gu * xv) / det
     inv = 1.0 / np.sqrt(1.0 + zx * zx + zy * zy)
-    return z, -zx * inv, -zy * inv, inv
+    return -zx * inv, -zy * inv, inv
 
 
 # ---------------------------------------------------------------------------
@@ -485,44 +610,66 @@ def xy_to_uv(road, px, py, u_hint=None):
     return _chunked(lambda a, b, c: _xy_to_uv(p, a, b, c), px.size, px, py, uh)
 
 
-def _xy_to_uv(p, px, py, u_hint):
+def _search(p, px, py, u_hint, cell=False):
+    """:func:`_xy_to_uv` by chunks; with ``cell=True`` also the cells of the points (or None)."""
+    if px.size <= _CHUNK:
+        return _xy_to_uv(p, px, py, u_hint, cell)
+    if u_hint is None:
+        u, v = _chunked(lambda a, b: _xy_to_uv(p, a, b, None), px.size, px, py)
+    else:
+        u, v = _chunked(lambda a, b, c: _xy_to_uv(p, a, b, c), px.size, px, py, u_hint)
+    return (u, v, None) if cell else (u, v)
+
+
+def _xy_to_uv(p, px, py, u_hint, cell=False):
+    """(u, v) of the points; with ``cell=True`` also their cells for :func:`_fast` (None if a
+    point is beyond an end of the reference line)."""
     ubeg, uinc = p.ubeg, p.uinc
     x0, y0 = p.x[0], p.y[0]
     pbc, pbs = p.pbc, p.pbs
     if p.straight:
         dx, dy = px - x0, py - y0
-        return ubeg + pbc * dx + pbs * dy, -pbs * dx + pbc * dy
+        u, v = ubeg + pbc * dx + pbs * dy, -pbs * dx + pbc * dy
+        return (u, v, None) if cell else (u, v)
     x, y = p.x, p.y
     nu = x.size
+    n1x, n1y, n2x, n2y = _normals_xy(p)  # corner normals of the intervals; (ny, -nx) is along the road
     if u_hint is None:
         j = _clip(_nearest_points(p, px, py) - 1, 0, nu - 2)
     else:
-        j = _clip(np.floor((u_hint - ubeg) / uinc), 0, nu - 2).astype(np.int64)
+        j = _clip((u_hint - ubeg) * p.uinv, 0, nu - 2).astype(np.int64)
         # refine the hint of every point by projection on the local tangent
-        s = ((px - x[j]) * (x[j + 1] - x[j]) + (py - y[j]) * (y[j + 1] - y[j])) / (uinc * uinc)
+        xj, yj = x[j], y[j]
+        j1 = j + 1
+        s = ((px - xj) * (x[j1] - xj) + (py - yj) * (y[j1] - yj)) * (p.uinv * p.uinv)
         j = _clip(j + np.floor(s).astype(np.int64), 0, nu - 2)
 
     def corners(jj):
-        jm, j3 = np.maximum(jj - 1, 0), np.minimum(jj + 2, nu - 1)
-        return x[jm], y[jm], x[jj], y[jj], x[jj + 1], y[jj + 1], x[j3], y[j3]
+        j1 = jj + 1
+        return x[jj], y[jj], x[j1], y[j1], n1x[jj], n1y[jj], n2x[jj], n2y[jj]
 
     # walk interval by interval until the point lies between the normals of both ends
     first = True
     active = None
     while True:
         if first:
-            x0_, y0_, x1, y1, x2, y2, x3, y3 = corners(j)
-            hdf = (px - x2) * (x3 - x1) + (py - y2) * (y3 - y1)
-            hdb = (px - x1) * (x2 - x0_) + (py - y1) * (y2 - y0_)
+            cells = corners(j)
+            x1, y1, x2, y2, a1x, a1y, a2x, a2y = cells
+            hdf = (px - x2) * a2y - (py - y2) * a2x
+            hdb = (px - x1) * a1y - (py - y1) * a1x
             jj, f, b = j, hdf, hdb
         else:
             jj = j[active]
             qx, qy = px[active], py[active]
-            c0x, c0y, c1x, c1y, c2x, c2y, c3x, c3y = corners(jj)
-            f = (qx - c2x) * (c3x - c1x) + (qy - c2y) * (c3y - c1y)
-            b = (qx - c1x) * (c2x - c0x) + (qy - c1y) * (c2y - c0y)
-        fwd = (f > 0) & (jj < nu - 2)
-        bwd = (b < 0) & (jj > 0) & ~fwd
+            c1x, c1y, c2x, c2y, d1x, d1y, d2x, d2y = corners(jj)
+            f = (qx - c2x) * d2y - (qy - c2y) * d2x
+            b = (qx - c1x) * d1y - (qy - c1y) * d1x
+        fwd = f > 0
+        bwd = b < 0
+        if not (fwd | bwd).any():
+            break
+        fwd &= jj < nu - 2
+        bwd &= (jj > 0) & ~fwd
         move = fwd | bwd
         if not move.any():
             break
@@ -531,16 +678,24 @@ def _xy_to_uv(p, px, py, u_hint):
         active = idx
         first = False
     if not first:  # some points moved: final values for every point
-        x0_, y0_, x1, y1, x2, y2, x3, y3 = corners(j)
-        hdf = (px - x2) * (x3 - x1) + (py - y2) * (y3 - y1)
-        hdb = (px - x1) * (x2 - x0_) + (py - y1) * (y2 - y0_)
+        cells = corners(j)
+        x1, y1, x2, y2, a1x, a1y, a2x, a2y = cells
+        hdf = (px - x2) * a2y - (py - y2) * a2x
+        hdb = (px - x1) * a1y - (py - y1) * a1x
     x2x1, y2y1 = x2 - x1, y2 - y1
     with np.errstate(invalid="ignore", divide="ignore"):
         v = (x2x1 * (py - y1) - y2y1 * (px - x1)) / np.hypot(x2x1, y2y1)
-        ta = hdb / ((x2 - x0_) * x2x1 + (y2 - y0_) * y2y1)
-        tb = ((x3 - x1) * (x2 - px) + (y3 - y1) * (y2 - py)) / ((x3 - x1) * x2x1 + (y3 - y1) * y2y1)
-        u = ubeg + (j + ta / (ta + tb)) * uinc
+        ta = hdb / (a1y * x2x1 - a1x * y2y1)
+        tb = -hdf / (a2y * x2x1 - a2x * y2y1)
+        w = ta / (ta + tb)
+        u = ubeg + (j + w) * uinc
 
+    if not ((hdb < 0) | (hdf > 0)).any():  # all the points are along the reference line
+        if not cell:
+            return u, v
+        if p.closed:
+            return u, v, None
+        return u, v, (j, w, cells)
     uend = p.uend
     xe, ye = x[-1], y[-1]
     pec, pes = p.pec, p.pes
@@ -566,7 +721,8 @@ def _xy_to_uv(p, px, py, u_hint):
             ua[sw] = ubeg + pbc * dx2 + pbs * dy2
             va[sw] = -pbs * dx2 + pbc * dy2
         u[after], v[after] = ua, va
-    return u, v
+    return (u, v, None) if cell else (u, v)
+
 
 
 # ---------------------------------------------------------------------------

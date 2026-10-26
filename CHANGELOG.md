@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.1
+
+Fixes
+
+- Modifiers of a part of a file: `f.read(u=..., apply_mods=True)` and
+  `crg.read(path, u=..., apply_mods=True)` compute the modifiers once on the whole file, so every
+  part is placed exactly where it is in the modified whole road (two parts that overlap give the
+  same x, y, z and normal). Before, `crg.read(path, u=..., apply_mods=True)` moved the part
+  relative to its own start. `road.apply_mods()` on a part now gives a warning.
+- Parts of a curved road give exactly the values of the whole road. Before, a short part of a gentle
+  curve could be taken as straight, and the first and last cells of a part were slightly off the
+  reference line of the whole road (below 1 mm).
+
+New features
+
+- `f.evaluator(window=40.0, margin=10.0, apply_mods=False)`: evaluator of an open file for
+  simulations on very large files. Only a window of the road is in memory; it is read again when a
+  point comes close to one of its ends. The results are the ones of the whole road (borders,
+  smoothing zones and closed tracks included), and a point is never evaluated outside the window.
+- `benchmarks/bench_evaluation.py`: time of the evaluation methods for 1, 640 and 10 000 points.
+
+Improvements
+
+- Faster evaluation of the points inside the grid (most points of a simulation):
+  `ev.xy_to_z(x, y, with_normal=True)` is 1.6 times faster (640 points: 0.29 ms -> 0.18 ms),
+  `uv_to_z` up to 1.8 times faster.
+
 ## 0.2.0
 
 New features

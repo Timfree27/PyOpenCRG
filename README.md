@@ -76,6 +76,10 @@ with crg.open("scan.crg") as f:                         # open once, like a Pyth
         part = f.read(u=(u0, u0 + 100))                 # ...then read parts in a few milliseconds
 ```
 
+A part gives exactly the same x, y, z as the whole road. With `apply_mods=True` (in `f.read()` or
+`crg.read(path, u=...)`), the modifiers are computed on the whole file, so the part is placed
+exactly where it is in the modified whole road.
+
 ## Tyre contact and simulation
 
 The surface normal and the slopes are exact derivatives of the interpolation (grid, slope, banking
@@ -87,12 +91,25 @@ dz_du, dz_dv = road.uv_to_gradient(u, v)                 # slopes along and acro
 
 ev = road.evaluator()                                    # prepared once
 for step in range(n_steps):
-    z, nx, ny, nz = ev.xy_to_z(x, y, with_normal=True)   # height and normal of 640 contact points: ~0.25 ms
+    z, nx, ny, nz = ev.xy_to_z(x, y, with_normal=True)   # height and normal of 640 contact points: ~0.2 ms
 ```
 
 The evaluator remembers the last position of each point and starts the next search from there.
 Give `u_hint` (one value, e.g. the u of the wheel) to `road.xy_to_uv()` / `road.xy_to_z()` when the
 road passes several times close to the same place.
+
+**Files larger than the memory**: `f.evaluator()` has the same methods and keeps only a window of
+the road in memory. The window is read again (a few milliseconds) when a point comes closer than
+`margin` to one of its ends; the results are the ones of the whole road.
+
+```python
+with crg.open("track.crg") as f:
+    ev = f.evaluator(window=40.0, margin=10.0, apply_mods=True)   # 40 m in memory
+    for step in range(n_steps):
+        z, nx, ny, nz = ev.xy_to_z(x, y, with_normal=True)
+```
+
+Speed of every method: `python benchmarks/bench_evaluation.py`.
 
 ## Gallery
 
@@ -134,6 +151,7 @@ z_absolute = road.z  +  road.zr (reference line elevation)  +  road.banking * v
 | Elevation, position | `uv_to_z`, `uv_to_xy`, `xy_to_uv`, `xy_to_z`, `u_to_phi`, `u_to_curvature` |
 | Normal, slopes | `uv_to_normal`, `xy_to_normal`, `uv_to_gradient`, `xy_to_z(..., with_normal=True)` |
 | Fast repeated calls | `ev = road.evaluator()`, then `ev.xy_to_z(...)`, `ev.uv_to_z(...)`... |
+| Simulation on a huge file | `with crg.open(path) as f: ev = f.evaluator(window=40.0)` |
 | Profiles | `road.long_section(v=0.9)`, `road.cross_section(u=50)` |
 | Cut, join, flip | `crop(u=..., v=...)`, `trim(1, 1)`, `crg.concatenate([r1, r2])`, `flip()` |
 | Re-sample | `resample(u_inc=0.05, v_inc=0.05)` |
@@ -171,7 +189,10 @@ scan, STL to CRG conversion, an obstacle test track.
 
 The `$ROAD_CRG_MODS` block of a file tells a simulator how to modify the road when it loads it
 (scale it, fill NaN values, move it). `crg.read()` returns the road **as stored in the file**; call
-`road.apply_mods()` (or `crg.read(path, apply_mods=True)`) to get what a simulator sees. If a file
+`road.apply_mods()` (or `crg.read(path, apply_mods=True)`) to get what a simulator sees. For a part
+of a file, use `crg.read(path, u=..., apply_mods=True)` or `f.read(u=..., apply_mods=True)`: the
+modifiers are then computed on the whole file (`part.apply_mods()` would move the part relative to
+its own start). If a file
 has **no** modifier block, OpenCRG applies default modifiers: NaN values are replaced by the last
 valid value of the cross section and the road start is moved to x = y = z = 0 with heading 0.
 
@@ -187,7 +208,7 @@ pytest
 If you use pyopencrg in a report, a publication or another software, please cite it
 (see [CITATION.cff](https://github.com/Timfree27/PyOpenCRG/blob/main/CITATION.cff)):
 
-> Hardy, T. *PyOpenCRG: OpenCRG road surface files in pure Python*, version 0.2.0, 2026.
+> Hardy, T. *PyOpenCRG: OpenCRG road surface files in pure Python*, version 0.2.1, 2026.
 
 ## License
 

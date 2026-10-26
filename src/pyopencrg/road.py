@@ -213,6 +213,8 @@ class CrgRoad:
         self.phi_offset = 0.0
         self.lon_start = self.lat_start = self.alt_start = None
         self.lon_end = self.lat_end = self.alt_end = None
+        # True for a part of a file (its modifiers would be applied relative to the part)
+        self._part = False
 
     @classmethod
     def _from_state(cls, z, v, u_start, u_inc, x, y, zr, banking, template=None):
@@ -230,6 +232,7 @@ class CrgRoad:
         self.mpro = None if other.mpro is None else dict(other.mpro)
         self.extra_header = list(other.extra_header)
         self.filename = other.filename
+        self._part = other._part
         for k in ("x_offset", "y_offset", "z_offset", "phi_offset", "lon_start", "lat_start",
                   "alt_start", "lon_end", "lat_end", "alt_end"):
             setattr(self, k, getattr(other, k))
@@ -453,8 +456,7 @@ class CrgRoad:
         eps = self.get_option("check_eps")
         cached = self._cache.get("straight")
         if cached is None or cached[0] != eps:
-            p = np.unwrap(self.phi)
-            cached = (eps, bool(np.ptp(p) <= eps * np.pi))
+            cached = (eps, _straight_line(self._x, self._y, eps))
             self._cache["straight"] = cached
         return cached[1]
 
@@ -536,6 +538,12 @@ class CrgRoad:
         used: NaN values are replaced by the last valid value of the cross
         section, and the start of the reference line is moved to x = y = z = 0
         with heading 0.
+
+        On a part of a file (``crg.read(path, u=...)``), the road would be
+        moved relative to the part, not to the whole file. Read the part with
+        ``apply_mods=True`` instead (``crg.read(path, u=..., apply_mods=True)``
+        or ``f.read(u=..., apply_mods=True)``): it is then placed exactly
+        where it is in the modified whole road.
         """
         from .mods import apply_mods
         return apply_mods(self)
@@ -1318,15 +1326,40 @@ def _reference_line(c, nu):
     return x, y, zr, b, warns
 
 
-def _assemble(c, z, v, rows, x, y, zr, b, warns):
-    """Road made of the grid ``z`` (records ``rows`` of the file) and the reference line of the file."""
+def _straight_line(x, y, eps):
+    """True if the line (x, y) is straight (see :attr:`CrgRoad.is_straight`)."""
+    return bool(np.ptp(np.unwrap(np.arctan2(np.diff(y), np.diff(x)))) <= eps * np.pi)
+
+
+def _set_part_line(road, x, y, rows, straight):
+    """Give a part (cross sections ``rows`` of the line x, y) the geometry of the whole line.
+
+    A part is straight only if the whole line is, and the normals at its first
+    and last cross sections are the ones of the whole line, so that parts
+    evaluate exactly like the whole road.
+    """
+    road._cache["straight"] = (road.get_option("check_eps"), bool(straight))
+    if not straight:
+        from .evaluate import _line_normals
+        step = int(rows[1] - rows[0])
+        a, b = int(rows[0] > 0), int(rows[-1] + step < x.size)
+        ext = np.arange(rows[0] - a * step, rows[-1] + (1 + b) * step, step)
+        n1, n2 = _line_normals(x[ext], y[ext])
+        road._cache["normals"] = (n1[a:n1.shape[0] - b], n2[a:n2.shape[0] - b])
+
+
+def _assemble(c, z, v, rows, x, y, zr, b, warns, straight=None):
+    """Road made of the grid ``z`` (records ``rows`` of the file) and the reference line of the file.
+
+    ``straight``: straightness of the whole line, if already known.
+    """
     nu = x.size
     head = c.head
     uinc = c.u_inc
     if rows is not None and rows.size != nu:  # partial or decimated reading: keep the selected cross sections
         step = int(rows[1] - rows[0])
-        x, y, zr, b = x[rows], y[rows], zr[rows], b[rows]
-        road = CrgRoad._from_state(z, v, c.u_start + rows[0] * uinc, uinc * step, x, y, zr, b)
+        road = CrgRoad._from_state(z, v, c.u_start + rows[0] * uinc, uinc * step, x[rows], y[rows], zr[rows], b[rows])
+        road._part = True
     else:
         road = CrgRoad._from_state(z, v, c.u_start, uinc, x.copy(), y.copy(), zr.copy(), b.copy())
     road.comments = list(c.comments)
@@ -1350,6 +1383,10 @@ def _assemble(c, z, v, rows, x, y, zr, b, warns):
         road.alt_end = road.alt_start + (zr[-1] - zr[0])
     road.read_warnings = list(warns)
     road.read_errors = list(c.errors)
+    if road._part:
+        if straight is None:
+            straight = _straight_line(x, y, road.get_option("check_eps"))
+        _set_part_line(road, x, y, rows, straight)
     return road
 
 
@@ -1394,6 +1431,8 @@ def read(path, apply_mods: bool = False, check=True, u=None, step=1, dtype="floa
         If True, the modifiers of the file are applied right away (like a
         simulator does). By default the road is returned exactly as stored
         in the file, and you can apply them later with ``road.apply_mods()``.
+        With ``u`` or ``step``, the modifiers are computed on the whole file:
+        the part is placed exactly where it is in the modified whole road.
     check : bool or "strict", optional
         ``True`` (default): refuse files with errors, show the warnings.
         ``"strict"``: also refuse files with warnings.
@@ -1432,6 +1471,10 @@ def read(path, apply_mods: bool = False, check=True, u=None, step=1, dtype="floa
     >>> detail = crg.read("scan.crg", u=(500, 520))   # doctest: +SKIP
     """
     from .io import CrgCorruptedError, read_crg_file
+    if apply_mods and (u is not None or step != 1):  # modifiers of the whole file, then the part
+        from .crgfile import CrgFile
+        with CrgFile(path, check) as f:
+            return f.read(u=u, step=step, dtype=dtype, apply_mods=True)
     try:
         content = read_crg_file(path, u=u, step=step, stop_on_error=bool(check), dtype=_grid_dtype(dtype))
     except CrgCorruptedError as exc:  # refused before the data is loaded in memory

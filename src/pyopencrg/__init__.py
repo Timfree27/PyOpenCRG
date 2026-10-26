@@ -30,7 +30,7 @@ Main entry points:
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 import importlib
 
@@ -38,12 +38,12 @@ from . import analysis, checks, edit, evaluate, generate, io, keywords, mods, sm
 from .checks import CheckReport, CrgCheckError, CrgCheckWarning
 from .crgfile import CrgFile, open
 from .edit import ComparisonResult, compare, concatenate
-from .evaluator import RoadEvaluator
+from .evaluator import FileEvaluator, RoadEvaluator
 from .road import CrgRoad, read
 
 __all__ = [
     "__version__", "read", "open", "convert", "compare", "concatenate",
-    "CrgRoad", "CrgFile", "RoadEvaluator", "CheckReport", "CrgCheckError", "CrgCheckWarning", "ComparisonResult",
+    "CrgRoad", "CrgFile", "RoadEvaluator", "FileEvaluator", "CheckReport", "CrgCheckError", "CrgCheckWarning", "ComparisonResult",
     "analysis", "checks", "edit", "evaluate", "generate", "io", "keywords", "mods", "smoothing",
     "plot", "export", "importers", "wgs84", "mapping", "cleaner", "viewer",
 ]

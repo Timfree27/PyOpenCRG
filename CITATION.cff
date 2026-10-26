@@ -5,7 +5,7 @@ type: software
 authors:
   - family-names: "Hardy"
     given-names: "Timothé"
-version: 0.2.0
+version: 0.2.1
 date-released: 2026-10-26
 license: Apache-2.0
 keywords:
