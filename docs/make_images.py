@@ -44,7 +44,7 @@ def main(path):
     p.remove_actor("title")
     p.remove_scalar_bar()  # the road fills the whole picture
     p.window_size = [1600, 700]
-    p.camera_position = [(eye[0], eye[1], cz + 3.2), (cx, cy, cz), (0, 0, 1)]
+    p.camera_position = [(eye[0], eye[1], cz + 2.0), (cx, cy, cz), (0, 0, 1)]
     p.camera.zoom(1.05)
     img = p.screenshot(return_img=True)
     Image.fromarray(img).convert("RGB").save(os.path.join(OUT, "belgian_block_3d.jpg"), quality=88)
