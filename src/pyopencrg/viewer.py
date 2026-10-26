@@ -114,7 +114,9 @@ def view3d(road, color: str = "z", absolute: bool = True, z_scale: float = 1.0, 
 
     plotter = pv.Plotter(off_screen=off_screen)
     plotter.add_mesh(mesh, scalars=_COLORS[color], cmap=cmap or ("Blues_r" if color == "normal" else "viridis"),
-                     nan_opacity=0.0, show_scalar_bar=True, smooth_shading=True)
+                     nan_opacity=0.0, show_scalar_bar=True, smooth_shading=True,
+                     scalar_bar_args={"vertical": True, "position_x": 0.88, "position_y": 0.15,
+                                      "height": 0.7, "width": 0.06})
     if show_reference_line:
         k = _indices(sub.nu, max(1, sub.nu // 20000))
         zl = sub.uv_to_z(sub.u[k], np.zeros(k.size), grid_only=not absolute)  # drawn on the surface
@@ -126,7 +128,7 @@ def view3d(road, color: str = "z", absolute: bool = True, z_scale: float = 1.0, 
     zmin, zmax = float(np.nanmin(z)), float(np.nanmax(z))
     plotter.show_grid(xtitle="x (m)", ytitle="y (m)", ztitle="z (m)", n_zlabels=3, font_size=9, fmt="%.2f",
                       axes_ranges=[float(x.min()), float(x.max()), float(y.min()), float(y.max()), zmin, zmax])
-    plotter.add_text(f"{road!r}"[1:-1], font_size=9)
+    plotter.add_text(f"{road!r}"[1:-1], font_size=9, name="title")
     plotter.view_isometric()
     if show:
         plotter.show(screenshot=screenshot)

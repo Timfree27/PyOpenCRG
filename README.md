@@ -1,6 +1,11 @@
 # PyOpenCRG
 
 > **Unofficial** implementation of the OpenCRG file format. Not affiliated with, endorsed by or supported by ASAM e.V.
+> OpenCRG® is a registered trademark of ASAM e.V.
+
+![Belgian block road rendered with PyOpenCRG](https://raw.githubusercontent.com/Timfree27/PyOpenCRG/main/docs/images/belgian_block_3d.jpg)
+
+<sub>Belgian block sample road of the ASAM OpenCRG project, drawn with `road.view3d(color="grid", cmap="jet", z_scale=5)` (relief exaggerated 5 times).</sub>
 
 **PyOpenCRG** (`import pyopencrg`) reads, analyses, edits, shows and writes [OpenCRG](https://www.asam.net/standards/detail/opencrg/)
 road surface files (`.crg`) in pure Python. You do not need to compile anything, and it runs on Windows, Linux
@@ -55,6 +60,21 @@ refuse files with warnings too.
 preview = crg.read("scan.crg", step=4)        # one point out of 4 in both directions (16 x less memory)
 detail = crg.read("scan.crg", u=(500, 520))   # 20 m at full resolution
 ```
+
+## Gallery
+
+Height map of the whole road, and a zoom where every 1 cm grid point is visible
+(`road.plot.heightmap(cmap="jet")`; zooming in a figure re-samples the image automatically):
+
+![Height map](https://raw.githubusercontent.com/Timfree27/PyOpenCRG/main/docs/images/belgian_block_heightmap.png)
+
+Reference line, valid data limits, cross sections and long sections (`road.plot.show_cuts_and_limits()`):
+
+![Cuts and limits](https://raw.githubusercontent.com/Timfree27/PyOpenCRG/main/docs/images/belgian_block_sections.png)
+
+<sub>Pictures rendered from the sample `belgian_block.crg` of the [ASAM OpenCRG project](https://github.com/asam-ev/OpenCRG)
+(data provided by DaimlerChrysler, 2005; Apache License 2.0). The sample file is not distributed with PyOpenCRG;
+the pictures are made with [docs/make_images.py](https://github.com/Timfree27/PyOpenCRG/blob/main/docs/make_images.py).</sub>
 
 ## Coordinates in one picture
 
