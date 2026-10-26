@@ -29,8 +29,8 @@ def main(path):
     road = crg.read(path)
     road.filename = "belgian_block.crg"  # no local path on the pictures
 
-    # 1. 3D view (PyVista), relief exaggerated 5 times, seen from the right side of the road, close up
-    zs = 5
+    # 1. 3D view (PyVista), relief exaggerated 2.5 times, seen from the right side of the road, close up
+    zs = 2.5
     um = 0.5 * (road.u_start + road.u_end)
     cx, cy = road.uv_to_xy(um, 0.0)
     cz = np.nanmean(road.z) * zs
@@ -45,7 +45,7 @@ def main(path):
     p.remove_scalar_bar()  # the road fills the whole picture
     p.window_size = [1600, 700]
     p.camera_position = [(eye[0], eye[1], cz + 3.2), (cx, cy, cz), (0, 0, 1)]
-    p.camera.zoom(1.3)
+    p.camera.zoom(1.05)
     img = p.screenshot(return_img=True)
     Image.fromarray(img).convert("RGB").save(os.path.join(OUT, "belgian_block_3d.jpg"), quality=88)
     p.close()

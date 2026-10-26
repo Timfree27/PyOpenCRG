@@ -5,7 +5,7 @@
 
 ![Belgian block road rendered with PyOpenCRG](https://raw.githubusercontent.com/Timfree27/PyOpenCRG/main/docs/images/belgian_block_3d.jpg)
 
-<sub>Belgian block sample road of the ASAM OpenCRG project, drawn with `road.view3d(color="grid", cmap="jet", z_scale=5)` (relief exaggerated 5 times).</sub>
+<sub>Belgian block sample road of the ASAM OpenCRG project, drawn with `road.view3d(color="grid", cmap="jet", z_scale=2.5)` (relief exaggerated 2.5 times).</sub>
 
 **PyOpenCRG** (`import pyopencrg`) reads, analyses, edits, shows and writes [OpenCRG](https://www.asam.net/standards/detail/opencrg/)
 road surface files (`.crg`) in pure Python. You do not need to compile anything, and it runs on Windows, Linux
