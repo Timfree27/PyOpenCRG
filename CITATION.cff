@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use pyopencrg in your work (reports, publications, software), please cite it as below."
-title: "pyopencrg: OpenCRG road surface files in pure Python"
+title: "PyOpenCRG: OpenCRG road surface files in pure Python"
 type: software
 authors:
   - family-names: "Hardy"

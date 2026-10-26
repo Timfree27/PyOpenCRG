@@ -3,7 +3,7 @@ requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pyopencrg"
+name = "PyOpenCRG"
 dynamic = ["version"]
 description = "Read, analyse, edit, show and write OpenCRG road surface files in pure Python (unofficial, not affiliated with ASAM)"
 readme = "README.md"
@@ -33,9 +33,9 @@ test = ["pytest>=7"]
 all = ["pillow>=9", "pyvista>=0.38"]
 
 [project.urls]
-Homepage = "https://github.com/Timfree27/pyopencrg"
-Documentation = "https://github.com/Timfree27/pyopencrg#readme"
-Issues = "https://github.com/Timfree27/pyopencrg/issues"
+Homepage = "https://github.com/Timfree27/PyOpenCRG"
+Documentation = "https://github.com/Timfree27/PyOpenCRG#readme"
+Issues = "https://github.com/Timfree27/PyOpenCRG/issues"
 
 [project.scripts]
 pyopencrg = "pyopencrg.cli:main"

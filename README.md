@@ -1,8 +1,8 @@
-# pyopencrg
+# PyOpenCRG
 
 > **Unofficial** implementation of the OpenCRG file format. Not affiliated with, endorsed by or supported by ASAM e.V.
 
-**pyopencrg** reads, analyses, edits, shows and writes [OpenCRG](https://www.asam.net/standards/detail/opencrg/)
+**PyOpenCRG** (`import pyopencrg`) reads, analyses, edits, shows and writes [OpenCRG](https://www.asam.net/standards/detail/opencrg/)
 road surface files (`.crg`) in pure Python. You do not need to compile anything, and it runs on Windows, Linux
 and macOS.
 
@@ -15,8 +15,8 @@ and macOS.
 - **Complete**: everything in the OpenCRG MATLAB tools, plus tools to clean laser scans, convert STL meshes
   and export to OBJ / STL / CSV / images / Simpack.
 
-French guide: [docs/guide_fr.md](https://github.com/Timfree27/pyopencrg/blob/main/docs/guide_fr.md). Equivalence with the MATLAB tools:
-[docs/matlab_equivalence.md](https://github.com/Timfree27/pyopencrg/blob/main/docs/matlab_equivalence.md).
+French guide: [docs/guide_fr.md](https://github.com/Timfree27/PyOpenCRG/blob/main/docs/guide_fr.md). Equivalence with the MATLAB tools:
+[docs/matlab_equivalence.md](https://github.com/Timfree27/PyOpenCRG/blob/main/docs/matlab_equivalence.md).
 
 ## Installation
 
@@ -109,7 +109,7 @@ pyopencrg export road.crg road.obj --step 2       # .obj .stl .csv .png .html .t
 
 ## Examples
 
-See the [examples](https://github.com/Timfree27/pyopencrg/tree/main/examples) folder: reading and plotting, editing, synthetic roads, cleaning a laser
+See the [examples](https://github.com/Timfree27/PyOpenCRG/tree/main/examples) folder: reading and plotting, editing, synthetic roads, cleaning a laser
 scan, STL to CRG conversion, an obstacle test track.
 
 ## Modifiers: a word of warning
@@ -130,11 +130,11 @@ pytest
 ## Citing
 
 If you use pyopencrg in a report, a publication or another software, please cite it
-(see [CITATION.cff](https://github.com/Timfree27/pyopencrg/blob/main/CITATION.cff)):
+(see [CITATION.cff](https://github.com/Timfree27/PyOpenCRG/blob/main/CITATION.cff)):
 
-> Hardy, T. *pyopencrg: OpenCRG road surface files in pure Python*, version 0.1.0, 2026.
+> Hardy, T. *PyOpenCRG: OpenCRG road surface files in pure Python*, version 0.1.0, 2026.
 
 ## License
 
-Apache License 2.0, see [LICENSE](https://github.com/Timfree27/pyopencrg/blob/main/LICENSE) and [NOTICE](https://github.com/Timfree27/pyopencrg/blob/main/NOTICE). Parts of the algorithms are derived
+Apache License 2.0, see [LICENSE](https://github.com/Timfree27/PyOpenCRG/blob/main/LICENSE) and [NOTICE](https://github.com/Timfree27/PyOpenCRG/blob/main/NOTICE). Parts of the algorithms are derived
 from the ASAM OpenCRG MATLAB tools (Apache 2.0).
