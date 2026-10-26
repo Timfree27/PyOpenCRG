@@ -62,6 +62,35 @@ def test_binary_converted_to_text_is_detected(tmp_path, curved_road):
         crg.read(bad)
 
 
+def test_trailing_newline_after_binary_data(tmp_path, straight_road):
+    f = tmp_path / "nl.crg"
+    straight_road.save(f, "KRBI")
+    with open(f, "ab") as fh:
+        fh.write(b"\n")
+    with pytest.warns(crg.CrgCheckWarning, match="white space"):
+        r = crg.read(f)
+    assert np.allclose(r.z, straight_road.z, atol=1e-6)
+
+
+def test_other_virtual_channel_and_badly_written_value(tmp_path):
+    from test_io import HAND_WRITTEN
+    text = HAND_WRITTEN.replace("#:LDFI", "#:LDFI\nU:reference line x,m,0,1.0")
+    text = text.replace("GRID_NAN_MODE       = 1 ", "GRID_NAN_MODE       = 1.000000000+e00 ")
+    f = tmp_path / "virt.crg"
+    f.write_text(text)
+    r = crg.read(f, check=False)
+    assert not any("virtual channel" in w for w in r.read_warnings)
+    assert r.mods == {"grid_nan_mode": 1.0}
+    assert any("badly written" in w for w in r.read_warnings)
+
+
+def test_missing_referenced_file(tmp_path):
+    f = tmp_path / "ref.crg"
+    f.write_text("$ROAD_CRG_FILE\n../nowhere/data.crg\n$\n")
+    with pytest.raises(FileNotFoundError, match="ROAD_CRG_FILE"):
+        crg.read(f)
+
+
 def test_duplicated_block(tmp_path, straight_road):
     f = tmp_path / "dup.crg"
     straight_road.mods = {"refpoint_x": 1.0}

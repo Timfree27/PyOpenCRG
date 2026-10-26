@@ -1,4 +1,4 @@
-pyopencrg
+PyOpenCRG
 Copyright 2026 Timothé Hardy
 
 This product is an unofficial implementation of the ASAM OpenCRG file
@@ -6,8 +6,39 @@ format. It is not affiliated with, endorsed by, or supported by ASAM e.V.
 
 Parts of this software (algorithms of the reading, writing, checking,
 modifying and evaluation functions) are derived from the ASAM OpenCRG
-MATLAB tools, distributed under the Apache License, Version 2.0.
-See https://github.com/asam-ev/OpenCRG and the NOTICE file of that project
-regarding copyright ownership.
+MATLAB tools, distributed under the Apache License, Version 2.0
+(https://github.com/asam-ev/OpenCRG). The NOTICE of that project reads:
 
-More information on ASAM OpenCRG: https://www.asam.net/standards/detail/opencrg/
+    ASAM OpenCRG®
+    Copyright 2025 ASAM e.V.
+
+    This product includes software developed at ASAM e.V. (https://www.asam.net/) and others.
+
+    The ASAM OpenCRG project is inherited from the original OpenCRG initiative of the German automotive industry.
+    Contributors to previous and current versions include:
+
+    Copyright 2005–2019 Daimler AG – Jochen Rauh
+    Copyright 2005–2011 Daimler AG – Klaus Mueller
+    Copyright 2008–2014 VIRES Simulationstechnologie GmbH – Marius Dupuis
+    Copyright 2008–2017 VIRES Simulationstechnologie GmbH – Holger Helmich
+    Copyright 2019      VIRES Simulationstechnologie GmbH – Marius Dupuis
+    Copyright 2020-2026 3D Mapping Solutions GmbH – Sebastian Tuttas
+    Copyright 2025-2026 3D Mapping Solutions GmbH – Patrick Kuemmerle
+    Copyright 2025-2026 VehicleSystemDynamics - Jochen Rauh
+    Copyright 2026      BMW AG - Thomas Bleher
+    Copyright 2026      ASAM e.V. – Clemens Linnhoff
+
+    In 2026, ASAM reinstated the Apache 2.0 license for ASAM OpenCRG Version 2.0.0.
+    All relevant license statements have been updated accordingly without functional changes.
+
+    ASAM OpenCRG® is a registered trademark of ASAM e.V.
+
+    More Information on ASAM OpenCRG can be found here:
+    https://www.asam.net/standards/detail/opencrg/
+
+(The splinefit subcomponent listed in the ASAM NOTICE is not part of PyOpenCRG.)
+
+The pictures in docs/images are rendered from the sample road
+"belgian_block.crg" of the ASAM OpenCRG project (data provided by
+DaimlerChrysler, Forschung Fahrzeugsystemdynamik, 2005; Apache License 2.0).
+The sample file itself is not distributed with PyOpenCRG.

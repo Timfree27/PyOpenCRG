@@ -258,11 +258,19 @@ def _row_mask(idx, rows):
 _UTF8_REPLACEMENT = b"\xef\xbf\xbd"
 
 
-def _binary_view(path, offset, nc, fmt, errors):
+def _binary_view(path, offset, nc, fmt, errors, warns=None):
     """Memory mapped (nrec, nc) view of the binary data; nothing is loaded in memory."""
     dtype = np.dtype(">f4" if fmt == "KRBI" else ">f8")
     per_block = 80 // dtype.itemsize
     nbytes = os.path.getsize(path) - offset
+    extra = nbytes % dtype.itemsize
+    if extra:  # a few white space bytes appended after the data (e.g. a final newline) are harmless
+        with open(path, "rb") as fh:
+            fh.seek(offset + nbytes - extra)
+            if not fh.read(extra).strip(b" \t\r\n"):
+                nbytes -= extra
+                if warns is not None:
+                    warns.append(f"{extra} white space byte(s) after the binary data ignored")
     with open(path, "rb") as fh:
         fh.seek(offset)
         sample = fh.read(min(nbytes, 4 << 20))
@@ -366,7 +374,7 @@ def read_ipl_data(ipl, rows=None, columns=None, full_columns=(), stop_on_error=F
     full_columns = list(full_columns)
     fmt = ipl.fmt
     if fmt in ("KRBI", "KDBI"):
-        view = _binary_view(ipl.filename, ipl.data_offset, nc, fmt, ipl.errors)
+        view = _binary_view(ipl.filename, ipl.data_offset, nc, fmt, ipl.errors, ipl.warnings)
         if stop_on_error and ipl.errors:
             del view
             raise CrgCorruptedError(ipl.filename, ipl.errors)
@@ -672,6 +680,9 @@ class CrgFileContent:
     errors: list = field(default_factory=list)
 
 
+_NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eEdD][+-]?\d+)?")
+
+
 def _parse_keyword_block(block: list, known, numeric_only=True, warns=None):
     """Parse ``keyword = value`` lines. Unknown keywords are reported."""
     values = {}
@@ -690,11 +701,15 @@ def _parse_keyword_block(block: list, known, numeric_only=True, warns=None):
             m = re.search(r"'([^']*)'", val)
             values[key] = (m.group(1) if m else val).strip()
             continue
-        try:
-            values[key] = float(val.split()[0].replace("D", "E").replace("d", "e"))
-        except (ValueError, IndexError):
+        text = val.split()[0] if val.split() else ""
+        m = _NUMBER.match(text)
+        if not m:
             if warns is not None:
                 warns.append(f"cannot read value of '{key}': '{val}'")
+            continue
+        values[key] = float(m.group(0).replace("D", "E").replace("d", "e"))
+        if m.end() != len(text) and warns is not None:  # e.g. '2.000000000+e00': keep the readable start
+            warns.append(f"badly written value of '{key}': '{text}' read as {values[key]:g}")
     return values
 
 
@@ -747,6 +762,9 @@ def read_crg_file(path: str | os.PathLike, u=None, step=1, stop_on_error=False) 
         ref = _resolve_file_reference(fref_block, out.warnings)
         if not os.path.isabs(ref):
             ref = os.path.join(os.path.dirname(path), ref)
+        if not os.path.isfile(ref):
+            raise FileNotFoundError(f"{path}: the data file referenced in the $ROAD_CRG_FILE block does not "
+                                    f"exist: {os.path.normpath(ref)}")
         ipl = read_ipl(ref, meta_only=True)
         struct2 = ipl.struct
         o2, struct2 = cut_block(struct2, "ROAD_CRG_OPTS")
@@ -785,6 +803,7 @@ def read_crg_file(path: str | os.PathLike, u=None, step=1, stop_on_error=False) 
     head = out.head
     # --- u axis: header has priority over the virtual U channel
     u_start, u_inc = 0.0, 0.01
+    u_def = None  # (start, increment) given by a "reference line u" virtual channel
     for d in ipl.kd_ind:
         items = [s.strip() for s in d.split(",")]
         if items and items[0].lower() == "reference line u" and len(items) > 1 and items[1] == "m":
@@ -793,9 +812,9 @@ def read_crg_file(path: str | os.PathLike, u=None, step=1, stop_on_error=False) 
                     u_start = float(items[2])
                 if len(items) > 3 and items[3]:
                     u_inc = float(items[3])
+                u_def = (u_start, u_inc)
             except ValueError:
                 out.warnings.append(f"cannot read virtual channel definition '{d}'")
-    u_def = (u_start, u_inc) if ipl.kd_ind else None
     if "reference_line_start_u" in head:
         u_start = head["reference_line_start_u"]
     inc_from_end = "reference_line_increment" not in head and "reference_line_end_u" in head
