@@ -208,7 +208,7 @@ pytest
 If you use pyopencrg in a report, a publication or another software, please cite it
 (see [CITATION.cff](https://github.com/Timfree27/PyOpenCRG/blob/main/CITATION.cff)):
 
-> Hardy, T. *PyOpenCRG: OpenCRG road surface files in pure Python*, version 0.2.1, 2026.
+> Hardy, T. *PyOpenCRG: OpenCRG road surface files in pure Python*, version 0.2.2, 2026.
 
 ## License
 

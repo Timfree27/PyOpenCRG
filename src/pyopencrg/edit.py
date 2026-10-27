@@ -550,44 +550,67 @@ def fill_nan(road, mode=2, offset=0.0):
       Cross sections without any valid value are copied from the closest
       valid cross section.
     """
-    z = road.z.copy()
-    nan = np.isnan(z)
-    if not nan.any() or mode == 0:
-        return road._derive(z=z)
-    if mode == 1:
-        z[nan] = offset
-        return road._derive(z=z)
-    if mode != 2:
+    if mode not in (0, 1, 2):
         raise ValueError("mode must be 0, 1 or 2")
+    return road._derive(z=_fill_nan_grid(road.z.copy(), road.v, mode, offset))
+
+
+def _fill_nan_grid(z, v, mode, offset):
+    """Fill the NaN values of the grid ``z`` in place (see :func:`fill_nan`) and return it.
+
+    Only the NaN cells are processed: each run of NaN values of a cross
+    section is filled from the valid values on both sides of the run.
+    """
+    if mode == 0:
+        return z
+    if not z.flags.c_contiguous:
+        z = np.ascontiguousarray(z)
+    flat = z.reshape(-1)
+    idx = np.flatnonzero(np.isnan(flat))
+    if idx.size == 0:
+        return z
+    if mode == 1:
+        flat[idx] = offset
+        return z
     nu, nv = z.shape
-    full = nan.all(axis=1)
-    if full.all():
-        raise ValueError("the grid contains only NaN values")
-    cols = np.arange(nv)
-    prev = np.where(~nan, cols, -1)
-    np.maximum.accumulate(prev, axis=1, out=prev)
-    nxt = np.where(~nan, cols, nv)
-    nxt = np.minimum.accumulate(nxt[:, ::-1], axis=1)[:, ::-1]
-    rows = np.arange(nu)[:, None].repeat(nv, axis=1)
-    v = road.v
-    has_p, has_n = prev >= 0, nxt < nv
-    pz = z[rows, np.clip(prev, 0, nv - 1)]
-    nz = z[rows, np.clip(nxt, 0, nv - 1)]
-    inner = nan & has_p & has_n
-    w = (v[cols][None, :] - v[np.clip(prev, 0, nv - 1)]) / (v[np.clip(nxt, 0, nv - 1)] - v[np.clip(prev, 0, nv - 1)] + 1e-300)
-    z[inner] = (pz + w * (nz - pz))[inner]
-    left = nan & ~has_p & has_n  # right border (small v)
-    z[left] = nz[left] + offset
-    right = nan & has_p & ~has_n
-    z[right] = pz[right] + offset
-    if full.any():
+    row, col = np.divmod(idx, nv)
+    # runs of consecutive NaN values in a cross section
+    start = np.ones(idx.size, dtype=bool)
+    start[1:] = (np.diff(idx) != 1) | (col[1:] == 0)
+    first = np.flatnonzero(start)
+    last = np.append(first[1:], idx.size) - 1
+    run = np.cumsum(start) - 1  # run of each NaN cell
+    c0, c1 = col[first] - 1, col[last] + 1  # valid columns on both sides (-1 / nv: none)
+    has_p, has_n = c0 >= 0, c1 < nv
+    base = row[first] * nv
+    pz = flat[base + np.maximum(c0, 0)]
+    nz = flat[base + np.minimum(c1, nv - 1)]
+    vp, vn = v[np.maximum(c0, 0)], v[np.minimum(c1, nv - 1)]
+    hp, hn = has_p[run], has_n[run]
+    vals = np.empty(idx.size)
+    inner = hp & hn
+    r = run[inner]
+    w = (v[col[inner]] - vp[r]) / (vn[r] - vp[r])
+    vals[inner] = pz[r] + w * (nz[r] - pz[r])
+    left = ~hp & hn  # right border (small v)
+    vals[left] = nz[run[left]] + offset
+    right = hp & ~hn
+    vals[right] = pz[run[right]] + offset
+    empty = ~hp & ~hn  # cross sections without any valid value
+    flat[idx[~empty]] = vals[~empty]
+    if empty.any():
+        bad = row[first[~has_p & ~has_n]]
+        full = np.zeros(nu, dtype=bool)
+        full[bad] = True
         good = np.flatnonzero(~full)
-        src = good[np.clip(np.searchsorted(good, np.flatnonzero(full)), 0, good.size - 1)]
-        alt = good[np.clip(np.searchsorted(good, np.flatnonzero(full)) - 1, 0, good.size - 1)]
-        bad = np.flatnonzero(full)
+        if good.size == 0:
+            raise ValueError("the grid contains only NaN values")
+        pos = np.searchsorted(good, bad)
+        src = good[np.clip(pos, 0, good.size - 1)]
+        alt = good[np.clip(pos - 1, 0, good.size - 1)]
         pick = np.where(np.abs(src - bad) <= np.abs(alt - bad), src, alt)
         z[bad] = z[pick] + offset
-    return road._derive(z=z)
+    return z
 
 
 # ---------------------------------------------------------------------------

@@ -341,17 +341,17 @@ class CrgFile:
 
     def _modified(self, part, rows, su):
         """The part ``part`` (rows ``rows`` of the file) with the modifiers of the whole file."""
-        from .edit import fill_nan
+        from .edit import _fill_nan_grid
         from .road import CrgRoad, _set_part_line
 
         ref, zs, ws, nan = self._modifiers()
-        z = part.z if zs == 1.0 else part.z * part.z.dtype.type(zs)
+        z = part.z if zs == 1.0 else part.z * part.z.dtype.type(zs)  # a new array, not used elsewhere
+        if nan is not None:
+            z = _fill_nan_grid(z, part.v * ws, *nan)
         new = CrgRoad._from_state(z, part.v * ws, ref.u_start + rows[0] * ref.u_inc, ref.u_inc * su, ref.x[rows],
                                   ref.y[rows], ref.zr[rows], ref.banking[rows], template=ref)
         new.read_warnings = list(part.read_warnings)
         new.read_errors = list(part.read_errors)
-        if nan is not None:
-            new = fill_nan(new, *nan)
         new._part = part._part
         if new._part:
             _set_part_line(new, ref.x, ref.y, rows, ref.is_straight)

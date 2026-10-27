@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2
+
+Improvements
+
+- `fill_nan()` (and the NaN filling of the modifiers) only processes the NaN cells: about 15 times
+  faster when few values are NaN (4 001 x 370 grid with 2 % of NaN on the borders: 83 ms -> 5 ms).
+  Reading a 40 m window with `apply_mods=True` (`f.read()`, `f.evaluator()`) now costs about the
+  same as without the modifiers. The results are unchanged.
+
 ## 0.2.1
 
 Fixes
